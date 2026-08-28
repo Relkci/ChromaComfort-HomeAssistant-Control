@@ -1,6 +1,6 @@
 # ChromaComfort Control & Status
 
-This project provides tools and scripts to control and monitor the ChromaComfort speaker via Bluetooth serial communication.
+This project provides tools and scripts to control and monitor the ChromaComfort speaker (and fan/light/rgb) via Bluetooth serial communication.
 
 This was developed based on the work of [taylorfinnell](https://gist.github.com/taylorfinnell/5349b8085d57836a45be7637055e0692), who provided a foundational understanding of the Bluetooth serial connection for the ChromaComfort speaker. The scripts allow users to send commands to the device and receive status updates.
 
@@ -9,6 +9,10 @@ This project was research done to facilitate control of the device in HomeAssist
 ## Acknowledgements
 
 This project was made possible thanks to prior work by [taylorfinnell](https://gist.github.com/taylorfinnell/5349b8085d57836a45be7637055e0692), whose gist provided valuable insight into the Bluetooth serial connection for the ChromaComfort speaker. Additional functionality was developed through trial and error based on that foundation.
+
+## Longterm goal:
+
+Create a companiion that will allow control of the fan, lights, and speaker and bridge the bluetooth speaker to an AirPlay or other streaming protocol, so that the ChromaComfort speaker can be used as a smart speaker in a home automation setup.  The speaker/fan/light combo supports a single paried device, so any attempt to fully control the device with realtime status updates results in the inability to using bluetooth speaker functionality. By creating a companion that can bridge the bluetooth speaker to a streaming protocol, the device can be used as a smart speaker in a home automation setup.
 
 ## General Steps to Use
 
