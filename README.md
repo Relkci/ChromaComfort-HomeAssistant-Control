@@ -57,3 +57,8 @@ Result:
 Seeing Reqwuest state seen: True isn't always reliable -- more reserach needs to be done to determine if the device is actually in the requested state.
 
 Refer to the script for available commands and options.
+
+An example is shown below with the light turned on iniitally.  The light is then turned off using the script.
+
+| ![Lightoff](img/lightoff.png) |
+|-------------------------------|
