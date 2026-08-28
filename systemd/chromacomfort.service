@@ -1,0 +1,19 @@
+[Unit]
+Description=ChromaComfort Bluetooth MQTT Bridge
+Documentation=https://github.com/Relkci/ChromaComfort-Python-Control
+After=network-online.target bluetooth.target
+Wants=network-online.target bluetooth.target
+
+[Service]
+Type=simple
+User=chromacomfort
+Group=chromacomfort
+ExecStart=/opt/chromacomfort/venv/bin/python /opt/chromacomfort/chromacomfort_bridge.py --config /etc/chromacomfort/chromacomfort.conf
+Restart=always
+RestartSec=5
+
+# Keep Python log output immediate in journalctl.
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
