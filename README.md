@@ -1,6 +1,11 @@
 # ChromaComfort Control & Status
 
-This project provides tools and scripts to control and monitor the ChromaComfort speaker (and fan/light/rgb) via Bluetooth serial communication.
+This project provides tools and scripts to control and monitor the ChromaComfort speaker (and fan/light/rgb)   via Bluetooth serial communication.
+
+https://broan-nutone.com/en-us/product/ventilationfans/spk110rgbl
+
+| ![Chroma Comfort](img/ChromaComfort.png) |
+|--------------------|
 
 This was developed based on the work of [taylorfinnell](https://gist.github.com/taylorfinnell/5349b8085d57836a45be7637055e0692), who provided a foundational understanding of the Bluetooth serial connection for the ChromaComfort speaker. The scripts allow users to send commands to the device and receive status updates.
 
