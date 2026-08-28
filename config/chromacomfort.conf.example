@@ -1,0 +1,29 @@
+# ChromaComfort Linux bridge configuration
+
+[bluetooth]
+# Bluetooth Classic MAC address of the ChromaComfort device.
+address = 04:57:91:F1:14:AB
+
+# SPP/RFCOMM channel. Confirm with SDP on your device; 1 is only a starting value.
+rfcomm_channel = 1
+
+reconnect_seconds = 5
+command_retry_seconds = 0.10
+command_timeout_seconds = 5
+
+[mqtt]
+# Home Assistant / Mosquitto broker address.
+host = 10.0.0.10
+port = 1883
+username = chromacomfort
+password = CHANGE_ME
+
+# Base topic for this bridge.
+topic_prefix = chromacomfort/bathroom
+
+# Home Assistant MQTT discovery prefix.
+discovery_prefix = homeassistant
+
+[device]
+name = Bathroom ChromaComfort
+id = chromacomfort_bathroom
