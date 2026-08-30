@@ -61,13 +61,19 @@ systemctl enable --now bluetooth.service
 if ! id "$AUDIO_USER" >/dev/null 2>&1; then
     useradd -m -s /bin/bash "$AUDIO_USER"
 fi
-usermod -aG audio,bluetooth "$AUDIO_USER"
+if getent group audio >/dev/null; then
+    usermod -aG audio "$AUDIO_USER"
+fi
+if getent group bluetooth >/dev/null; then
+    usermod -aG bluetooth "$AUDIO_USER"
+fi
 AUDIO_UID="$(id -u "$AUDIO_USER")"
 loginctl enable-linger "$AUDIO_USER"
 systemctl start "user@${AUDIO_UID}.service"
 
 mkdir -p "$INSTALL_DIR" "$CONFIG_DIR"
 cp "$REPO_DIR/chromacomfort_bridge.py" "$INSTALL_DIR/"
+cp "$REPO_DIR/chromacomfort_audio_status.py" "$INSTALL_DIR/"
 cp "$REPO_DIR/requirements-linux.txt" "$INSTALL_DIR/"
 python3 -m venv "$INSTALL_DIR/venv"
 "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements-linux.txt"
@@ -93,6 +99,9 @@ discovery_prefix = homeassistant
 [device]
 name = $DEVICE_NAME
 id = $DEVICE_ID
+
+[audio]
+airplay_name = $AIRPLAY_NAME
 EOF
 chmod 600 "$CONFIG_DIR/chromacomfort.conf"
 
@@ -151,6 +160,8 @@ sudo -u "$AUDIO_USER" \
 
 # A2DP boot recovery. A device can be Connected=yes due to RFCOMM while the
 # actual A2DP sink is missing, so this checks for the PipeWire sink itself.
+# Shairport is deliberately restarted only after the A2DP sink is confirmed,
+# avoiding a boot race where Shairport starts against the built-in audio sink.
 sed \
     -e "s/__BLUETOOTH_MAC__/$BT_MAC/g" \
     -e "s/__BLUETOOTH_MAC_UNDERSCORE__/$BT_MAC_UNDERSCORE/g" \
@@ -163,8 +174,17 @@ sed "s/__AUDIO_UID__/$AUDIO_UID/g" \
     "$REPO_DIR/systemd/chromacomfort-audio-ready.service.example" \
     >/etc/systemd/system/chromacomfort-audio-ready.service
 
+# MQTT audio-health publisher. It reports A2DP, Shairport, stream state, and
+# current output into the same Home Assistant MQTT device.
+cp "$REPO_DIR/systemd/chromacomfort-audio-status.service" \
+   /etc/systemd/system/chromacomfort-audio-status.service
+
 systemctl daemon-reload
-systemctl enable chromacomfort-bluetooth-ready.service chromacomfort.service chromacomfort-audio-ready.service
+systemctl enable \
+    chromacomfort-bluetooth-ready.service \
+    chromacomfort.service \
+    chromacomfort-audio-ready.service \
+    chromacomfort-audio-status.service
 
 # Restart WirePlumber so the new headless Bluetooth rules are loaded.
 sudo -u "$AUDIO_USER" \
@@ -177,10 +197,7 @@ if timeout 5 bluetoothctl info "$BT_MAC" 2>/dev/null | grep -q 'Paired: yes'; th
     systemctl restart chromacomfort-bluetooth-ready.service
     systemctl restart chromacomfort.service
     systemctl restart chromacomfort-audio-ready.service || true
-    sudo -u "$AUDIO_USER" \
-        XDG_RUNTIME_DIR="/run/user/$AUDIO_UID" \
-        DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$AUDIO_UID/bus" \
-        systemctl --user restart shairport-sync.service
+    systemctl restart chromacomfort-audio-status.service
 else
     echo
     echo "The device does not appear to be paired yet. Pair/trust it with:"
@@ -206,4 +223,5 @@ echo "  chromacomfort-status"
 echo "  systemctl status chromacomfort --no-pager"
 echo "  systemctl status chromacomfort-bluetooth-ready --no-pager"
 echo "  systemctl status chromacomfort-audio-ready --no-pager"
+echo "  systemctl status chromacomfort-audio-status --no-pager"
 echo "  sudo -u $AUDIO_USER XDG_RUNTIME_DIR=/run/user/$AUDIO_UID wpctl status"
