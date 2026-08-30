@@ -1,0 +1,14 @@
+[Unit]
+Description=Establish ChromaComfort Bluetooth A2DP Audio
+Requires=chromacomfort-bluetooth-ready.service
+After=chromacomfort-bluetooth-ready.service
+After=user@__AUDIO_UID__.service
+Wants=user@__AUDIO_UID__.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/chromacomfort-audio-ready.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
