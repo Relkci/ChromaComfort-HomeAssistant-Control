@@ -1,6 +1,6 @@
 # Linux Bluetooth / MQTT / AirPlay Bridge
 
-> **Status:** tested successfully on Linux with BlueZ RFCOMM/SPP, MQTT, Home Assistant discovery, fan control, white-light on/off and brightness, RGB color/brightness, wall RGB mode, simultaneous Bluetooth A2DP audio, Shairport Sync/AirPlay, Spotify source-volume control, Home Assistant-triggered local WAV alerts, automatic recovery after reboot, and AirPlay pause/resume recovery.
+> **Status:** tested successfully on Linux with BlueZ RFCOMM/SPP, MQTT, Home Assistant discovery, fan control, white-light on/off and brightness, RGB color/brightness, wall RGB mode, simultaneous Bluetooth A2DP audio, Shairport Sync/AirPlay, Spotify source-volume control, Home Assistant-triggered local WAV alerts, automatic recovery after reboot, AirPlay pause/resume recovery, and stable ALSA/PipeWire playback using a 0.5-second Shairport backend buffer.
 
 ## Architecture
 
@@ -175,6 +175,7 @@ general =
 {
     name = "Bathroom Speaker";
     output_backend = "alsa";
+    audio_backend_buffer_desired_length_in_seconds = 0.5;
     disable_synchronization = "yes";
     ignore_volume_control = "no";
     volume_range_db = 30;
@@ -188,9 +189,10 @@ alsa =
 };
 ```
 
-Three settings/choices were important in testing:
+Four settings/choices were important in testing:
 
 - `output_backend = "alsa"` with `output_device = "pipewire"` avoids a reproducible pause/resume failure in the packaged Shairport `pa` backend.
+- `audio_backend_buffer_desired_length_in_seconds = 0.5` eliminated choppy/clippy playback observed with the smaller default ALSA backend buffer on the tested Bluetooth path.
 - `disable_synchronization = "yes"` avoids Shairport's normal resynchronization behavior fighting Bluetooth A2DP latency.
 - `volume_range_db = 30` preserves AirPlay/Spotify volume control while avoiding the very large software attenuation range that made playback effectively inaudible at normal source-volume settings.
 
@@ -218,6 +220,16 @@ Resume:  state=idle,    pulse.corked=true   <-- failed
 ```
 
 Switching Shairport to ALSA through `pipewire-alsa` eliminated the tested pause/resume failure. For that reason the repository now treats ALSA -> PipeWire as the reference configuration rather than `pa` -> pipewire-pulse.
+
+### Why the backend buffer is 0.5 seconds
+
+After switching to ALSA -> PipeWire, playback resumed correctly after pauses but audio was audibly choppy and clipping-like. Increasing Shairport's desired backend buffer to:
+
+```conf
+audio_backend_buffer_desired_length_in_seconds = 0.5;
+```
+
+eliminated the observed dropouts on the reference host. This adds buffering latency, which is acceptable for the intended whole-room AirPlay use case, in exchange for stable playback through the ALSA -> PipeWire -> A2DP chain.
 
 The distribution's system-level Shairport service remains disabled. Shairport runs as the dedicated audio user's systemd user service so it connects to the correct PipeWire runtime.
 
@@ -280,24 +292,25 @@ sudo -u chromaudio \
   systemctl --user status shairport-sync.service --no-pager
 ```
 
-Confirm the installed Shairport build and managed backend:
+Confirm the installed Shairport build and managed backend/buffer:
 
 ```bash
 shairport-sync -V
-grep -nE 'output_backend|alsa|pa|pipewire' /home/chromaudio/.config/shairport-sync/shairport-sync.conf
+grep -nE 'output_backend|audio_backend_buffer|alsa|pa|pipewire' /home/chromaudio/.config/shairport-sync/shairport-sync.conf
 ```
 
-## Pause/resume validation
+## Pause/resume and audio-quality validation
 
-After installation or update, specifically test the failure mode that led to the ALSA backend change:
+After installation or update:
 
-1. Start Spotify/AirPlay playback and confirm audio.
-2. Skip to another track and confirm audio continues.
+1. Start Spotify/AirPlay playback and confirm clean, continuous audio.
+2. Skip to another track and confirm playback continues.
 3. Pause playback for at least several seconds.
 4. Resume playback and confirm audio returns without restarting Shairport.
 5. Repeat pause/resume several times.
+6. Listen for choppy, clipping-like, or dropout behavior during sustained playback.
 
-With the reference ALSA -> PipeWire configuration, pause/resume has been validated successfully on the development host.
+With the reference ALSA -> PipeWire configuration and 0.5-second backend buffer, both pause/resume and sustained playback quality have been validated successfully on the development host.
 
 ## Reboot validation
 
@@ -307,11 +320,12 @@ After installation, reboot and verify without manual intervention:
 2. Fan/light/RGB controls physically work.
 3. `wpctl status` shows the ChromaComfort Bluetooth device and sink.
 4. The configured AirPlay speaker appears.
-5. Spotify/AirPlay playback is audible.
+5. Spotify/AirPlay playback is audible and clean.
 6. Source volume control works.
 7. Spotify/AirPlay pause and resume restores audio without a Shairport restart.
-8. Publishing a built-in alert to `<topic_prefix>/audio/play` produces an audible sound.
-9. An alert can mix with active AirPlay playback.
+8. Sustained playback remains free of choppy/dropout artifacts.
+9. Publishing a built-in alert to `<topic_prefix>/audio/play` produces an audible sound.
+10. An alert can mix with active AirPlay playback.
 
 ## Protocol/testing notes
 
