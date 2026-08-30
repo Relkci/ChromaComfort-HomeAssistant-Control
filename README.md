@@ -15,6 +15,22 @@ The Linux integration can provide these functions from one Bluetooth host:
 
 This avoids requiring a dedicated ESP32 for control and also solves the practical problem that the ChromaComfort normally expects a single paired Bluetooth host. The Linux bridge owns the Bluetooth relationship and exposes higher-level network interfaces to the rest of the home.
 
+## Validated test platform
+
+The Linux integration and boot-recovery behavior documented in this repository were developed and validated on the following physical platform:
+
+- **Computer:** Lenovo ThinkCentre M625q Tiny
+- **Architecture:** x86-64
+- **CPU:** AMD A4-9120e
+- **Bluetooth adapter:** TP-Link UB500 Plus USB Bluetooth adapter
+- **Operating system:** Ubuntu 26.04.1 LTS
+- **Audio stack:** PipeWire / pipewire-pulse / WirePlumber
+- **Bluetooth stack:** BlueZ
+
+This is the reference environment for statements in the documentation that a behavior has been tested or validated. The project is not intended to require this exact hardware. Other x86 Linux systems, Raspberry Pi/ARM systems, built-in Bluetooth controllers, and other USB Bluetooth adapters may work, but those combinations have not been validated by this project unless specifically noted.
+
+Bluetooth behavior, BlueZ timing, A2DP initialization, RFCOMM behavior, and available package versions can differ between hardware and Linux distributions. Reports and testing from other platforms are welcome.
+
 ## Architecture
 
 ```text
@@ -155,12 +171,15 @@ scripts/chromacomfort-audio-ready.sh.example
 wireplumber/                            headless Bluetooth/audio rules
 shairport/                              AirPlay configuration/service template
 docs/ALERTS.md                          Home Assistant alert-sound usage
+docs/BOOT-AND-SERVICE-FLOW.md           boot order, service roles, readiness/troubleshooting
 LINUX.md                                full Linux documentation
 ```
 
 ## Tested behavior
 
-The current Linux implementation has been validated with simultaneous RFCOMM control and A2DP audio from the same Linux Bluetooth host. Fan/light/RGB controls work through Home Assistant while the speaker remains usable through AirPlay. Home Assistant-triggered local WAV alerts have also been validated while AirPlay remains available, with PipeWire mixing the alert into the same A2DP output instead of stopping or restarting Shairport. Boot testing identified separate BlueZ, A2DP-sink, and Shairport-startup races; recovery logic is included for each. As with any Bluetooth setup, testing on additional hardware and Linux distributions is welcome.
+The current Linux implementation has been validated on the x86-64 Ubuntu 26.04.1 LTS reference platform described above, using a Lenovo ThinkCentre M625q Tiny with an AMD A4-9120e and TP-Link UB500 Plus Bluetooth adapter. It has been validated with simultaneous RFCOMM control and A2DP audio from the same Linux Bluetooth host. Fan/light/RGB controls work through Home Assistant while the speaker remains usable through AirPlay. Home Assistant-triggered local WAV alerts have also been validated while AirPlay remains available, with PipeWire mixing the alert into the same A2DP output instead of stopping or restarting Shairport. Boot testing identified separate BlueZ, A2DP-sink, and Shairport-startup races; recovery logic is included for each.
+
+Other hardware and Linux platforms may work, including Raspberry Pi/ARM systems, but should currently be considered unvalidated rather than assumed equivalent to the reference platform.
 
 Bluetooth implementations and ChromaComfort hardware revisions may differ, so verify the Serial Port RFCOMM channel with `sdptool browse <MAC>` rather than assuming channel 7 universally.
 
