@@ -9,6 +9,11 @@ general =
     # normally after pause/play transitions.
     output_backend = "alsa";
 
+    # The ALSA -> PipeWire -> Bluetooth path was audibly choppy/clippy with the
+    # smaller default backend buffer. A 0.5 second desired backend buffer
+    # eliminated the observed dropouts on the validated ChromaComfort host.
+    audio_backend_buffer_desired_length_in_seconds = 0.5;
+
     # Bluetooth A2DP latency and Shairport's normal synchronization logic did
     # not coexist reliably on the tested ChromaComfort speaker.
     disable_synchronization = "yes";
