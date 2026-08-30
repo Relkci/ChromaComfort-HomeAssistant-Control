@@ -1,10 +1,12 @@
 # ChromaComfort Linux bridge configuration
 
 [bluetooth]
-# Bluetooth Classic MAC address of the ChromaComfort device.
-address = 04:57:91:F1:14:AB
+# Bluetooth Classic MAC address of your ChromaComfort device.
+# Replace this obvious placeholder with the address reported by bluetoothctl.
+address = AA:BB:CC:DD:EE:FF
 
-# Confirmed by SDP on the tested ChromaComfort-Sensonic unit.
+# Channel 7 was confirmed by SDP on the tested ChromaComfort-Sensonic unit.
+# Verify with `sdptool browse <MAC>` if your model differs.
 rfcomm_channel = 7
 
 # The daemon manages: rfcomm connect 0 <MAC> <channel>
@@ -17,7 +19,8 @@ command_timeout_seconds = 5
 
 [mqtt]
 # Home Assistant / Mosquitto broker address.
-host = 10.0.0.10
+# 192.0.2.0/24 is reserved for documentation; replace with your broker address.
+host = 192.0.2.10
 port = 1883
 username = chromacomfort
 password = CHANGE_ME
