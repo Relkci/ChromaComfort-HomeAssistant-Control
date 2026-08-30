@@ -16,22 +16,53 @@ log() {
 sink_exists() {
     sudo -u "$AUDIO_USER" \
         XDG_RUNTIME_DIR="$RUNTIME" \
+        PULSE_SERVER="unix:$RUNTIME/pulse/native" \
         pactl list short sinks 2>/dev/null | grep -q "$A2DP_SINK"
 }
 
+restart_shairport() {
+    log "Restarting Shairport Sync after A2DP sink is ready..."
+    sudo -u "$AUDIO_USER" \
+        XDG_RUNTIME_DIR="$RUNTIME" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=$RUNTIME/bus" \
+        systemctl --user restart shairport-sync.service
+
+    if sudo -u "$AUDIO_USER" \
+        XDG_RUNTIME_DIR="$RUNTIME" \
+        DBUS_SESSION_BUS_ADDRESS="unix:path=$RUNTIME/bus" \
+        systemctl --user is-active --quiet shairport-sync.service; then
+        log "Shairport Sync is active. Audio path is ready."
+        return 0
+    fi
+
+    log "ERROR: Shairport Sync failed to become active."
+    return 1
+}
+
 log "Waiting for PipeWire/WirePlumber..."
+pipewire_ready=0
 for attempt in $(seq 1 20); do
     if sudo -u "$AUDIO_USER" \
         XDG_RUNTIME_DIR="$RUNTIME" \
         wpctl status >/dev/null 2>&1; then
+        pipewire_ready=1
         break
     fi
     sleep 2
 done
 
+if [[ "$pipewire_ready" -ne 1 ]]; then
+    log "ERROR: PipeWire/WirePlumber did not become ready."
+    exit 1
+fi
+
+# Shairport may start before the Bluetooth A2DP sink exists. Even if the sink
+# is already present by the time this service runs, restart Shairport only after
+# confirming the sink so it binds to the correct PipeWire/PulseAudio output.
 if sink_exists; then
     log "ChromaComfort A2DP sink already available."
-    exit 0
+    restart_shairport
+    exit $?
 fi
 
 log "A2DP sink is not available. Re-establishing Bluetooth connection."
@@ -48,7 +79,8 @@ for attempt in $(seq 1 10); do
     for wait_attempt in $(seq 1 5); do
         if sink_exists; then
             log "ChromaComfort A2DP sink is available."
-            exit 0
+            restart_shairport
+            exit $?
         fi
         sleep 2
     done
