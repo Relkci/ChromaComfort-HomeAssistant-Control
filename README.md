@@ -41,6 +41,7 @@ MQTT Discovery is published automatically. The tested bridge exposes:
 - RGB light on/off, color, and brightness
 - Wall RGB mode
 - Bridge diagnostics including connection state, packet counters, ACK count, last command/error, uptime, and raw brightness
+- Audio diagnostics including overall audio readiness, A2DP sink presence, AirPlay service state, AirPlay stream state, and current audio output
 
 No manual Home Assistant entity YAML is required when MQTT discovery is enabled.
 
@@ -48,12 +49,13 @@ No manual Home Assistant entity YAML is required when MQTT discovery is enabled.
 
 The optional Linux audio setup exposes the ChromaComfort speaker as an AirPlay destination, for example `Bathroom Speaker`.
 
-The tested Shairport configuration retains Spotify/AirPlay volume control while limiting the software attenuation range so normal listening levels remain audible. The Linux boot services also recover two behaviors observed with the tested device:
+The tested Shairport configuration retains Spotify/AirPlay volume control while limiting the software attenuation range so normal listening levels remain audible. The Linux boot services also recover behaviors observed with the tested device:
 
 - BlueZ can occasionally be unresponsive immediately after boot.
 - The device can report Bluetooth `Connected: yes` because RFCOMM is active while the A2DP PipeWire sink is still missing.
+- Shairport Sync can start before the Bluetooth A2DP sink exists, leaving AirPlay apparently connected but silent. The audio-readiness service now restarts Shairport only after confirming the ChromaComfort A2DP sink.
 
-The supplied health/readiness services verify the actual required state and retry/recover automatically.
+The supplied readiness services verify the actual required state and retry/recover automatically. `chromacomfort-status` provides a one-command PASS/WARN/FAIL overview plus detailed Bluetooth, PipeWire, Shairport, and service diagnostics.
 
 ## Quick Linux installation
 
@@ -99,9 +101,12 @@ The repository includes:
 
 ```text
 chromacomfort_bridge.py                 MQTT/RFCOMM bridge
+chromacomfort_audio_status.py           MQTT AirPlay/A2DP health publisher
 config/chromacomfort.conf.example       bridge configuration example
 systemd/chromacomfort.service           control bridge service
+systemd/chromacomfort-audio-status.service
 scripts/install-linux.sh                guided Linux installer
+scripts/chromacomfort-status.sh         one-command diagnostics
 scripts/chromacomfort-bluetooth-ready.sh
 scripts/chromacomfort-audio-ready.sh.example
 wireplumber/                            headless Bluetooth/audio rules
@@ -111,7 +116,7 @@ LINUX.md                                full Linux documentation
 
 ## Tested behavior
 
-The current Linux implementation has been validated with simultaneous RFCOMM control and A2DP audio from the same Linux Bluetooth host. Fan/light/RGB controls work through Home Assistant while the speaker remains usable through AirPlay. The complete configuration has also been reboot-tested with automatic BlueZ, RFCOMM, A2DP, PipeWire, and Shairport recovery.
+The current Linux implementation has been validated with simultaneous RFCOMM control and A2DP audio from the same Linux Bluetooth host. Fan/light/RGB controls work through Home Assistant while the speaker remains usable through AirPlay. Boot testing identified separate BlueZ, A2DP-sink, and Shairport-startup races; recovery logic is included for each. As with any Bluetooth setup, testing on additional hardware and Linux distributions is welcome.
 
 Bluetooth implementations and ChromaComfort hardware revisions may differ, so verify the Serial Port RFCOMM channel with `sdptool browse <MAC>` rather than assuming channel 7 universally.
 
