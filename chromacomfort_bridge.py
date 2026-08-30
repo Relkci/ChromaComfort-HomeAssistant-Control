@@ -60,8 +60,19 @@ def clamp(value: int, low: int, high: int) -> int:
 
 
 def gamma_correct(value: int) -> int:
+    """Match the gamma correction used by Taylor Finnell's reference implementation."""
     value = clamp(value, 0, 255)
-    return round(((value / 255.0) ** 2.8) * 255.0)
+    return round(((value / 255.0) ** 4.0) * 255.0)
+
+
+def ha_to_device_brightness(value: int) -> int:
+    """Convert Home Assistant 0-255 brightness to ChromaComfort 0-100."""
+    return round(clamp(value, 0, 255) * 100 / 255)
+
+
+def device_to_ha_brightness(value: int) -> int:
+    """Convert ChromaComfort 0-100 brightness to Home Assistant 0-255."""
+    return round(clamp(value, 0, 100) * 255 / 100)
 
 
 def build_command(command: int, *, r=0, g=0, b=0, dimmer=0, speed=30) -> bytes:
@@ -171,6 +182,7 @@ class ChromaComfortBridge:
         self.serial: Optional[serial.Serial] = None
         self.bt_connected = False
         self.mqtt_connected = False
+        self.ready_announced = False
         self.rx_buffer = bytearray()
         self.tx_packets = 0
         self.rx_packets = 0
@@ -181,6 +193,7 @@ class ChromaComfortBridge:
         self.last_ack = ""
         self.last_rgb = (255, 255, 255)
         self.last_rgb_brightness = 100
+        self.last_white_brightness = 50
         self.command_lock = threading.Lock()
         self.pending_ack = threading.Event()
 
@@ -243,16 +256,26 @@ class ChromaComfortBridge:
 
     def publish_discovery(self) -> None:
         self._discovery("fan", "fan", {
-            "name": "Fan", "command_topic": self.topic("fan/set"),
-            "state_topic": self.topic("fan/state"), "payload_on": "ON", "payload_off": "OFF",
+            "name": "Fan",
+            "command_topic": self.topic("fan/set"),
+            "state_topic": self.topic("fan/state"),
+            "payload_on": "ON", "payload_off": "OFF",
         })
         self._discovery("light", "white_light", {
-            "name": "White Light", "command_topic": self.topic("white/set"),
-            "state_topic": self.topic("white/state"), "payload_on": "ON", "payload_off": "OFF",
+            "name": "White Light",
+            "command_topic": self.topic("white/set"),
+            "state_topic": self.topic("white/state"),
+            "payload_on": "ON", "payload_off": "OFF",
+            "brightness": True,
+            "brightness_command_topic": self.topic("white/brightness/set"),
+            "brightness_state_topic": self.topic("white/brightness/state"),
+            "brightness_scale": 255,
         })
         self._discovery("light", "rgb_light", {
-            "name": "RGB Light", "command_topic": self.topic("rgb/set"),
-            "state_topic": self.topic("rgb/state"), "payload_on": "ON", "payload_off": "OFF",
+            "name": "RGB Light",
+            "command_topic": self.topic("rgb/set"),
+            "state_topic": self.topic("rgb/state"),
+            "payload_on": "ON", "payload_off": "OFF",
             "brightness": True,
             "brightness_command_topic": self.topic("rgb/brightness/set"),
             "brightness_state_topic": self.topic("rgb/brightness/state"),
@@ -261,14 +284,17 @@ class ChromaComfortBridge:
             "rgb_state_topic": self.topic("rgb/color/state"),
         })
         self._discovery("switch", "wall_rgb_mode", {
-            "name": "Wall RGB Mode", "command_topic": self.topic("wall_rgb/set"),
-            "state_topic": self.topic("wall_rgb/state"), "payload_on": "ON", "payload_off": "OFF",
+            "name": "Wall RGB Mode",
+            "command_topic": self.topic("wall_rgb/set"),
+            "state_topic": self.topic("wall_rgb/state"),
+            "payload_on": "ON", "payload_off": "OFF",
         })
 
         diagnostics = [
             ("sensor", "bridge_status", "Bridge Status", self.topic("bridge/status"), None),
             ("binary_sensor", "bluetooth_connected", "Bluetooth Connected", self.topic("bridge/bluetooth_connected"), "connectivity"),
             ("binary_sensor", "mqtt_connected", "MQTT Connected", self.topic("bridge/mqtt_connected"), "connectivity"),
+            ("sensor", "brightness_raw", "Brightness Raw", self.topic("bridge/brightness_raw"), None),
             ("sensor", "last_error", "Last Error", self.topic("bridge/last_error"), None),
             ("sensor", "last_command", "Last Command", self.topic("bridge/last_command"), None),
             ("sensor", "last_ack", "Last ACK", self.topic("bridge/last_ack"), "timestamp"),
@@ -283,6 +309,8 @@ class ChromaComfortBridge:
                 cfg.update({"payload_on": "ON", "payload_off": "OFF"})
             if oid == "uptime":
                 cfg.update({"unit_of_measurement": "s", "device_class": "duration"})
+            elif oid == "brightness_raw":
+                cfg.update({"unit_of_measurement": "%", "icon": "mdi:brightness-6"})
             elif device_class:
                 cfg["device_class"] = device_class
             self._discovery(component, oid, cfg)
@@ -308,7 +336,9 @@ class ChromaComfortBridge:
             if suffix == "fan/set":
                 self.send_named("fan-on" if payload.upper() == "ON" else "fan-off")
             elif suffix == "white/set":
-                self.send_named("white-on" if payload.upper() == "ON" else "white-off")
+                self.set_white_power(payload.upper() == "ON")
+            elif suffix == "white/brightness/set":
+                self.set_white_brightness(int(payload))
             elif suffix == "wall_rgb/set":
                 self.send_named("wall-rgb-on" if payload.upper() == "ON" else "wall-rgb-off")
             elif suffix == "rgb/set":
@@ -363,12 +393,14 @@ class ChromaComfortBridge:
             raise TimeoutError(f"Timed out waiting for {self.s.rfcomm_device}")
 
         self.bt_connected = True
+        self.ready_announced = False
         self.rx_buffer.clear()
         self.publish("bridge/bluetooth_connected", "ON")
         self.publish_bridge_status("Bluetooth RFCOMM connected; waiting for device status")
 
     def disconnect_bluetooth(self) -> None:
         self.bt_connected = False
+        self.ready_announced = False
         self.publish("bridge/bluetooth_connected", "OFF")
         if self.serial:
             try:
@@ -416,6 +448,34 @@ class ChromaComfortBridge:
         }
         return self.send_with_ack(build_command(mapping[name]), name)
 
+    def set_white_power(self, enabled: bool) -> bool:
+        if not enabled:
+            return self.send_with_ack(build_command(CMD_WHITE_OFF), "white-off")
+        return self.send_with_ack(
+            build_command(CMD_WHITE_ON, dimmer=self.last_white_brightness),
+            f"white-on-{self.last_white_brightness}",
+        )
+
+    def set_white_brightness(self, brightness_255: int) -> bool:
+        """Experimentally set white-light brightness using CMD_WHITE_ON's dimmer byte.
+
+        ChromaComfort status reports brightness at payload index 5. The protocol's
+        outgoing dimmer field is 0-100. This command path intentionally keeps RGB
+        favorite handling separate so white-light testing cannot overwrite RGB color.
+        """
+        brightness_255 = clamp(brightness_255, 0, 255)
+        if brightness_255 == 0:
+            return self.set_white_power(False)
+        device_brightness = ha_to_device_brightness(brightness_255)
+        ok = self.send_with_ack(
+            build_command(CMD_WHITE_ON, dimmer=device_brightness),
+            f"white-brightness-{brightness_255}-device-{device_brightness}",
+        )
+        if ok:
+            self.last_white_brightness = device_brightness
+            self.publish("white/brightness/state", str(brightness_255))
+        return ok
+
     def set_rgb_power(self, enabled: bool) -> bool:
         cmd = CMD_ACTIVATE_FAVORITE1 if enabled else CMD_DEACTIVATE_FAVORITE1
         return self.send_with_ack(
@@ -425,7 +485,7 @@ class ChromaComfortBridge:
 
     def set_rgb_brightness(self, brightness_255: int) -> bool:
         brightness_255 = clamp(brightness_255, 0, 255)
-        self.last_rgb_brightness = round((brightness_255 / 255.0) * 100)
+        self.last_rgb_brightness = ha_to_device_brightness(brightness_255)
         ok = self.send_with_ack(
             build_command(CMD_ACTIVATE_FAVORITE1, dimmer=self.last_rgb_brightness),
             f"rgb-brightness-{brightness_255}",
@@ -460,18 +520,37 @@ class ChromaComfortBridge:
             return
         if info["type"] != "status":
             return
+
+        device_brightness = clamp(info["brightness"], 0, 100)
+        brightness_255 = device_to_ha_brightness(device_brightness)
+
         self.publish("fan/state", "ON" if info["fan"] else "OFF")
         self.publish("white/state", "ON" if info["white"] else "OFF")
         self.publish("wall_rgb/state", "ON" if info["wall_rgb"] else "OFF")
         self.publish("rgb/state", "ON" if info["favorite1"] else "OFF")
-        brightness_255 = round(clamp(info["brightness"], 0, 100) * 255 / 100)
+        self.publish("white/brightness/state", str(brightness_255))
         self.publish("rgb/brightness/state", str(brightness_255))
+        self.publish("bridge/brightness_raw", str(device_brightness))
+
+        # Preserve the last brightness reported by the physical controller for the
+        # currently active light mode so a later HA on-command reuses it.
+        if info["white"]:
+            self.last_white_brightness = device_brightness
+        if info["favorite1"]:
+            self.last_rgb_brightness = device_brightness
+
         self.publish("bridge/raw_status", {
-            "mask": info["mask"], "brightness": info["brightness"],
-            "unknown_9": info["unknown_9"], "sweep": info["sweep"],
-            "favorite2": info["favorite2"], "pattern": info["pattern"],
+            "mask": info["mask"],
+            "brightness": device_brightness,
+            "unknown_9": info["unknown_9"],
+            "sweep": info["sweep"],
+            "favorite2": info["favorite2"],
+            "pattern": info["pattern"],
         })
-        self.publish_bridge_status("Connected / Ready")
+
+        if not self.ready_announced:
+            self.ready_announced = True
+            self.publish_bridge_status("Connected / Ready")
 
     def bluetooth_loop(self) -> None:
         while not self.stop_event.is_set():
