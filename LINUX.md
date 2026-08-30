@@ -1,6 +1,6 @@
 # Linux Bluetooth / MQTT / AirPlay Bridge
 
-> **Status:** tested successfully on Linux with BlueZ RFCOMM/SPP, MQTT, Home Assistant discovery, fan control, white-light on/off and brightness, RGB color/brightness, wall RGB mode, simultaneous Bluetooth A2DP audio, Shairport Sync/AirPlay, Spotify source-volume control, Home Assistant-triggered local WAV alerts, and automatic recovery after reboot.
+> **Status:** tested successfully on Linux with BlueZ RFCOMM/SPP, MQTT, Home Assistant discovery, fan control, white-light on/off and brightness, RGB color/brightness, wall RGB mode, simultaneous Bluetooth A2DP audio, Shairport Sync/AirPlay, Spotify source-volume control, Home Assistant-triggered local WAV alerts, automatic recovery after reboot, and AirPlay pause/resume recovery.
 
 ## Architecture
 
@@ -15,43 +15,14 @@
                               |                       /             \
                        Home Assistant        Shairport Sync      Alert WAVs
                                                   |                  |
-                                               AirPlay          MQTT trigger
+                                             ALSA/PipeWire       MQTT trigger
                                                   |                  |
-                                            Spotify/iPhone     Home Assistant
+                                               AirPlay          Home Assistant
+                                                  |
+                                            Spotify/iPhone
 ```
 
 The important design point is that one Linux host remains the ChromaComfort's Bluetooth peer while Home Assistant and audio clients communicate with that Linux host over the network.
-
-## Functional Home Assistant entities
-
-The bridge advertises MQTT Discovery entities for:
-
-- Fan
-- White Light (on/off and brightness)
-- RGB Light (on/off, RGB color, brightness)
-- Wall RGB Mode
-
-RGB color uses the Favorite Color 1 save/activate behavior identified in Taylor Finnell's reverse engineering. Current RGB values do not appear in the periodic status packet, so the bridge remembers colors it successfully commands. Brightness is present in device status and is converted between the ChromaComfort 0-100 range and Home Assistant's 0-255 light range.
-
-Diagnostic entities include:
-
-- Bridge Status
-- Bluetooth Connected
-- MQTT Connected
-- Last Error
-- Last Command
-- Last ACK
-- TX Packets
-- RX Packets
-- ACK Count
-- Bridge Uptime
-- Brightness Raw
-- Audio Status
-- A2DP Sink
-- AirPlay Service
-- AirPlay Stream
-- Audio Output
-- Last Alert
 
 ## Tested Linux stack
 
@@ -63,9 +34,10 @@ The integration was developed and validated with:
 - Mosquitto-compatible MQTT broker
 - Home Assistant MQTT Discovery
 - PipeWire
+- pipewire-alsa
 - pipewire-pulse
 - WirePlumber 0.5+
-- Shairport Sync using its PulseAudio (`pa`) backend through pipewire-pulse
+- Shairport Sync 4.3.7 using its ALSA backend through PipeWire's ALSA plugin
 
 The tested ChromaComfort-Sensonic exposes both Serial Port Profile and Audio Sink services. Simultaneous SPP/RFCOMM control and A2DP playback from the same Linux host has been validated.
 
@@ -78,16 +50,19 @@ sudo apt update
 sudo apt install -y \
   bluetooth bluez bluez-tools \
   python3 python3-venv \
-  pipewire pipewire-pulse wireplumber libspa-0.2-bluetooth pulseaudio-utils \
+  pipewire pipewire-alsa pipewire-pulse wireplumber libspa-0.2-bluetooth pulseaudio-utils \
   shairport-sync sudo
 sudo systemctl enable --now bluetooth
 ```
 
-Confirm a Bluetooth controller exists:
+`pipewire-alsa` is required for the tested Shairport configuration. Verify that the dedicated audio user can see the PipeWire ALSA PCM:
 
 ```bash
-bluetoothctl list
+CHROMA_UID=$(id -u chromaudio)
+sudo -u chromaudio XDG_RUNTIME_DIR=/run/user/$CHROMA_UID aplay -L
 ```
+
+The output should include a `pipewire` PCM.
 
 ## Pair and trust the ChromaComfort
 
@@ -133,14 +108,6 @@ sdptool browse AA:BB:CC:DD:EE:FF
 
 Locate the `Serial Port` service and its `Channel`. Use that value in the installer/configuration.
 
-A low-level test is:
-
-```bash
-sudo rfcomm connect 0 AA:BB:CC:DD:EE:FF 7
-```
-
-Leave that command running and, from another terminal, use `chromacomfort_control_status.py /dev/rfcomm0 ...` if you want to test the serial protocol before installing the daemon.
-
 ## Recommended installation
 
 Clone the repository and run the guided installer:
@@ -151,20 +118,9 @@ cd ChromaComfort-Python-Control
 sudo bash scripts/install-linux.sh
 ```
 
-The installer asks for:
+The installer asks for the Bluetooth MAC/RFCOMM channel, MQTT settings, Home Assistant names, and AirPlay speaker name. It installs the bridge under `/opt/chromacomfort`, writes private configuration to `/etc/chromacomfort/chromacomfort.conf`, creates the lingering `chromaudio` user, configures PipeWire/WirePlumber, installs Shairport Sync as a user service, generates built-in alert WAVs, and installs boot recovery services.
 
-- Bluetooth MAC address
-- RFCOMM channel
-- MQTT broker, port, username, and password
-- MQTT topic prefix
-- Home Assistant device name/ID
-- AirPlay speaker name
-
-It installs the bridge under `/opt/chromacomfort`, writes the private configuration to `/etc/chromacomfort/chromacomfort.conf`, creates a dedicated `chromaudio` user, enables user lingering, configures PipeWire/WirePlumber, installs Shairport Sync as a user service, generates the built-in alert WAV files, and installs boot recovery services.
-
-MQTT credentials are stored in `/etc/chromacomfort/chromacomfort.conf` with mode `0600`.
-
-For an existing installation, update in place with:
+For an existing installation:
 
 ```bash
 cd /opt/ChromaComfort-Python-Control
@@ -172,128 +128,17 @@ git pull
 sudo bash scripts/update-linux.sh
 ```
 
-## Manual bridge test
-
-Before systemd, you can test the bridge interactively:
-
-```bash
-python3 -m venv venv
-./venv/bin/pip install -r requirements-linux.txt
-cp config/chromacomfort.conf.example chromacomfort.conf
-nano chromacomfort.conf
-./venv/bin/python chromacomfort_bridge.py --config ./chromacomfort.conf --debug
-```
-
-The example MQTT address is from a documentation-only network. Replace it with your broker.
-
-## MQTT topics
-
-With the default example prefix:
+The updater installs `pipewire-alsa` if necessary and migrates the managed Shairport configuration to the tested ALSA -> PipeWire backend. The first migration preserves the prior Shairport config as:
 
 ```text
-chromacomfort/bathroom/fan/state
-chromacomfort/bathroom/fan/set
-chromacomfort/bathroom/white/state
-chromacomfort/bathroom/white/set
-chromacomfort/bathroom/white/brightness/state
-chromacomfort/bathroom/white/brightness/set
-chromacomfort/bathroom/rgb/state
-chromacomfort/bathroom/rgb/set
-chromacomfort/bathroom/rgb/color/state
-chromacomfort/bathroom/rgb/color/set
-chromacomfort/bathroom/rgb/brightness/state
-chromacomfort/bathroom/rgb/brightness/set
-chromacomfort/bathroom/wall_rgb/state
-chromacomfort/bathroom/wall_rgb/set
-chromacomfort/bathroom/bridge/status
-chromacomfort/bathroom/bridge/availability
-chromacomfort/bathroom/bridge/bluetooth_connected
-chromacomfort/bathroom/bridge/mqtt_connected
-chromacomfort/bathroom/bridge/last_error
-chromacomfort/bathroom/bridge/last_command
-chromacomfort/bathroom/bridge/last_ack
-chromacomfort/bathroom/bridge/tx_packets
-chromacomfort/bathroom/bridge/rx_packets
-chromacomfort/bathroom/bridge/ack_count
-chromacomfort/bathroom/bridge/uptime
-chromacomfort/bathroom/bridge/raw_status
-chromacomfort/bathroom/bridge/brightness_raw
-chromacomfort/bathroom/audio/availability
-chromacomfort/bathroom/audio/status
-chromacomfort/bathroom/audio/a2dp_sink
-chromacomfort/bathroom/audio/airplay_service
-chromacomfort/bathroom/audio/stream
-chromacomfort/bathroom/audio/output
-chromacomfort/bathroom/audio/last_alert
-chromacomfort/bathroom/audio/play
+/home/chromaudio/.config/shairport-sync/shairport-sync.conf.pre-alsa-migration
 ```
-
-Discovery publishes under `homeassistant/...` by default.
-
-## Home Assistant alert sounds
-
-The audio helper can play short local WAV alerts through the same PipeWire/A2DP output used by Shairport Sync. This is intentionally not implemented as a full media-player stack. Home Assistant simply publishes the name of a built-in sound over MQTT.
-
-The installer/update script generates:
-
-```text
-/opt/chromacomfort/sounds/doorbell.wav
-/opt/chromacomfort/sounds/complete.wav
-/opt/chromacomfort/sounds/alert.wav
-/opt/chromacomfort/sounds/notification.wav
-```
-
-These files are synthesized locally by `scripts/generate-alert-sounds.py`; no external sound downloads are required.
-
-To play a sound, publish its name to:
-
-```text
-<topic_prefix>/audio/play
-```
-
-Home Assistant example:
-
-```yaml
-action:
-  - action: mqtt.publish
-    data:
-      topic: chromacomfort/bathroom/audio/play
-      payload: doorbell
-```
-
-Washing-machine-complete example:
-
-```yaml
-action:
-  - action: mqtt.publish
-    data:
-      topic: chromacomfort/bathroom/audio/play
-      payload: complete
-```
-
-Playback uses `pw-play` directly against the stable ChromaComfort A2DP sink. The alert path does not pause, stop, or restart Shairport Sync. If AirPlay is already active, PipeWire mixes the alert with the existing stream. Multiple rapid alert requests are serialized rather than played on top of each other.
-
-Only simple built-in sound names are accepted. Arbitrary paths and URLs are intentionally rejected. The most recent alert is published to `<topic_prefix>/audio/last_alert` and exposed through Home Assistant MQTT Discovery as `Last Alert`.
-
-See [docs/ALERTS.md](docs/ALERTS.md) for the focused alert documentation.
 
 ## Headless Bluetooth audio
 
-A dedicated lingering user (`chromaudio` by default) owns the PipeWire/WirePlumber/Shairport audio session.
+A dedicated lingering user (`chromaudio` by default) owns the PipeWire/WirePlumber/Shairport audio session. The supplied WirePlumber configuration disables BlueZ seat monitoring and the normal Bluetooth sink suspend timeout for this dedicated headless use case.
 
-WirePlumber normally limits Bluetooth audio management to an active local seat. On a headless bridge, the supplied configuration disables BlueZ seat monitoring:
-
-```ini
-wireplumber.profiles = {
-  main = {
-    monitor.bluez.seat-monitoring = disabled
-  }
-}
-```
-
-The repository also includes a rule that disables WirePlumber's normal Bluetooth sink suspend timeout for this dedicated always-on use case.
-
-These files are under `wireplumber/` and are installed into:
+Files are installed under:
 
 ```text
 /home/chromaudio/.config/wireplumber/wireplumber.conf.d/
@@ -301,15 +146,35 @@ These files are under `wireplumber/` and are installed into:
 
 ## Shairport Sync / Spotify volume
 
-The tested Ubuntu package exposes Shairport's PulseAudio backend rather than a native PipeWire backend. `pipewire-pulse` provides the compatibility layer.
+The tested Ubuntu Shairport Sync 4.3.7 package supports ALSA and PulseAudio (`pa`) but does not contain the newer native PipeWire backend. The stable tested path is therefore:
 
-The working configuration uses:
+```text
+AirPlay / Spotify
+      |
+      v
+Shairport Sync 4.3.7
+      |
+      | ALSA backend
+      v
+pipewire-alsa PCM
+      |
+      v
+PipeWire / WirePlumber
+      |
+      v
+BlueZ A2DP
+      |
+      v
+ChromaComfort-Sensonic Speaker
+```
+
+The working configuration is:
 
 ```conf
 general =
 {
     name = "Bathroom Speaker";
-    output_backend = "pa";
+    output_backend = "alsa";
     disable_synchronization = "yes";
     ignore_volume_control = "no";
     volume_range_db = 30;
@@ -317,72 +182,70 @@ general =
     volume_control_profile = "flat";
 };
 
-pa =
+alsa =
 {
-    application_name = "Bathroom Speaker";
+    output_device = "pipewire";
 };
 ```
 
-Two settings were important in testing:
+Three settings/choices were important in testing:
 
+- `output_backend = "alsa"` with `output_device = "pipewire"` avoids a reproducible pause/resume failure in the packaged Shairport `pa` backend.
 - `disable_synchronization = "yes"` avoids Shairport's normal resynchronization behavior fighting Bluetooth A2DP latency.
 - `volume_range_db = 30` preserves AirPlay/Spotify volume control while avoiding the very large software attenuation range that made playback effectively inaudible at normal source-volume settings.
 
-The distribution's system-level Shairport service is disabled. Shairport runs as the dedicated audio user's systemd user service so it connects to the correct PipeWire/PulseAudio runtime.
+### Why the PulseAudio backend is not used
+
+The original configuration used:
+
+```conf
+output_backend = "pa";
+```
+
+through `pipewire-pulse`. Initial playback and track skipping worked, but pausing Spotify/AirPlay caused the Shairport stream to enter:
+
+```text
+state: "idle"
+pulse.corked = "true"
+```
+
+On resume, the stream remained corked and silent even though the AirPlay client reported playback. Restarting Shairport recreated the stream and restored audio. Repeated testing showed the transition:
+
+```text
+Playing: state=running, pulse.corked=false
+Paused:  state=idle,    pulse.corked=true
+Resume:  state=idle,    pulse.corked=true   <-- failed
+```
+
+Switching Shairport to ALSA through `pipewire-alsa` eliminated the tested pause/resume failure. For that reason the repository now treats ALSA -> PipeWire as the reference configuration rather than `pa` -> pipewire-pulse.
+
+The distribution's system-level Shairport service remains disabled. Shairport runs as the dedicated audio user's systemd user service so it connects to the correct PipeWire runtime.
 
 ## Why the boot recovery services exist
 
-Two device/stack behaviors were reproduced during testing.
-
 ### BlueZ can be unresponsive after boot
-
-When this occurs, even `bluetoothctl show` can hang. The RFCOMM bridge cannot recover while BlueZ itself is wedged.
 
 `chromacomfort-bluetooth-ready.service` runs a bounded `bluetoothctl show` health check. It waits for normal initialization and only restarts `bluetooth.service` if BlueZ remains unresponsive.
 
 ### Bluetooth Connected does not guarantee A2DP
 
-The ChromaComfort can report:
+The RFCOMM/SPP control session can make the device report `Connected: yes` while PipeWire still has no `bluez_output...` A2DP sink. `chromacomfort-audio-ready.service` checks the actual audio sink. If missing, it disconnects/reconnects the device and retries until WirePlumber creates it.
+
+After the A2DP sink is confirmed, the readiness service restarts Shairport Sync. This avoids the boot race where Shairport could start before the Bluetooth sink existed and appear functional while producing no audio.
+
+The readiness check still uses the PulseAudio-compatible `pactl` interface to query PipeWire sinks. This is independent of Shairport's playback backend; Shairport itself uses ALSA -> PipeWire.
+
+## Home Assistant alert sounds
+
+Home Assistant can publish a built-in sound name to:
 
 ```text
-Connected: yes
+<topic_prefix>/audio/play
 ```
 
-because the RFCOMM/SPP control session is active, while PipeWire still has no `bluez_output...` A2DP sink.
-
-`chromacomfort-audio-ready.service` therefore checks the actual PipeWire sink instead of trusting the generic Bluetooth `Connected` flag. If the sink is missing, it disconnects/reconnects the device and retries until WirePlumber creates the A2DP sink. The tested device occasionally returns a page timeout on the first connection attempt, so retries are intentional.
-
-After the A2DP sink is confirmed, the readiness service restarts Shairport Sync. This avoids the observed boot race where Shairport could start before the Bluetooth sink existed and appear functional while producing no audio.
+The audio helper plays local WAV files directly with `pw-play --target <ChromaComfort sink>`. This path is native PipeWire and does not depend on Shairport's selected backend. If AirPlay is active, PipeWire can mix the alert with it.
 
 ## Service checks
-
-Control bridge:
-
-```bash
-systemctl status chromacomfort --no-pager
-journalctl -u chromacomfort -f
-```
-
-BlueZ readiness:
-
-```bash
-systemctl status chromacomfort-bluetooth-ready --no-pager
-journalctl -u chromacomfort-bluetooth-ready -b --no-pager
-```
-
-A2DP readiness:
-
-```bash
-systemctl status chromacomfort-audio-ready --no-pager
-journalctl -u chromacomfort-audio-ready -b --no-pager
-```
-
-Audio MQTT/status/alert service:
-
-```bash
-systemctl status chromacomfort-audio-status --no-pager
-journalctl -u chromacomfort-audio-status -f
-```
 
 One-command overview:
 
@@ -396,15 +259,16 @@ PipeWire/WirePlumber:
 CHROMA_UID=$(id -u chromaudio)
 sudo -u chromaudio XDG_RUNTIME_DIR=/run/user/$CHROMA_UID wpctl status
 sudo -u chromaudio XDG_RUNTIME_DIR=/run/user/$CHROMA_UID pactl list short sinks
+sudo -u chromaudio XDG_RUNTIME_DIR=/run/user/$CHROMA_UID aplay -L
 ```
 
-A healthy audio state should include a sink named similarly to:
+A healthy installation should have the stable A2DP sink:
 
 ```text
 bluez_output.AA_BB_CC_DD_EE_FF.1
 ```
 
-and Shairport's configured stream should route to the ChromaComfort sink rather than a built-in ALSA device.
+and an ALSA PCM named `pipewire`.
 
 Shairport user service:
 
@@ -416,21 +280,38 @@ sudo -u chromaudio \
   systemctl --user status shairport-sync.service --no-pager
 ```
 
+Confirm the installed Shairport build and managed backend:
+
+```bash
+shairport-sync -V
+grep -nE 'output_backend|alsa|pa|pipewire' /home/chromaudio/.config/shairport-sync/shairport-sync.conf
+```
+
+## Pause/resume validation
+
+After installation or update, specifically test the failure mode that led to the ALSA backend change:
+
+1. Start Spotify/AirPlay playback and confirm audio.
+2. Skip to another track and confirm audio continues.
+3. Pause playback for at least several seconds.
+4. Resume playback and confirm audio returns without restarting Shairport.
+5. Repeat pause/resume several times.
+
+With the reference ALSA -> PipeWire configuration, pause/resume has been validated successfully on the development host.
+
 ## Reboot validation
 
-After installation, reboot the Linux host and verify all of the following without manual intervention:
+After installation, reboot and verify without manual intervention:
 
-1. Home Assistant rediscovers/retains the MQTT device.
-2. RX/TX packet counters begin changing.
-3. Fan and light commands physically work.
-4. `wpctl status` shows the ChromaComfort `[bluez5]` device and sink.
-5. The configured AirPlay speaker appears.
-6. Spotify/AirPlay playback is audible.
-7. Source volume control changes speaker output level.
-8. Publishing `doorbell` to `<topic_prefix>/audio/play` produces an audible alert.
-9. If AirPlay is already playing, the alert mixes into it without stopping or restarting Shairport.
-
-The supplied configuration has passed this sequence on the development/test host.
+1. Home Assistant retains MQTT device state.
+2. Fan/light/RGB controls physically work.
+3. `wpctl status` shows the ChromaComfort Bluetooth device and sink.
+4. The configured AirPlay speaker appears.
+5. Spotify/AirPlay playback is audible.
+6. Source volume control works.
+7. Spotify/AirPlay pause and resume restores audio without a Shairport restart.
+8. Publishing a built-in alert to `<topic_prefix>/audio/play` produces an audible sound.
+9. An alert can mix with active AirPlay playback.
 
 ## Protocol/testing notes
 
@@ -438,10 +319,9 @@ The supplied configuration has passed this sequence on the development/test host
 2. The tested unit uses Bluetooth Classic SPP/RFCOMM channel 7.
 3. Fan, white light, wall RGB, white brightness, RGB Favorite Color, and RGB brightness have been validated from Linux through Home Assistant/MQTT.
 4. Incoming status includes current brightness but does not appear to expose selected RGB channel values, so the bridge remembers successfully commanded RGB values.
-5. The final byte in observed status/ACK packets is not treated as a checksum because its algorithm/meaning has not been confirmed.
-6. Bluetooth numeric PipeWire/WirePlumber object IDs are ephemeral. Scripts use the stable `bluez_output.<MAC>.1` name instead.
-7. RFCOMM control and A2DP audio are kept as separate services intentionally. A failure in audio should not require redesigning the MQTT/control daemon.
-8. Local alert playback shares the PipeWire A2DP path but does not control the Shairport process, allowing alerts and AirPlay to coexist.
+5. Bluetooth numeric PipeWire/WirePlumber object IDs are ephemeral. Scripts use the stable `bluez_output.<MAC>.1` name instead.
+6. RFCOMM control and A2DP audio are kept as separate services intentionally.
+7. Local alert playback uses native PipeWire through `pw-play`; Shairport playback uses ALSA through PipeWire.
 
 ## Acknowledgement
 
