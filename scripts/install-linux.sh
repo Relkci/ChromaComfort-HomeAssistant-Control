@@ -53,7 +53,7 @@ apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
     bluetooth bluez bluez-tools \
     python3 python3-venv \
-    pipewire pipewire-pulse wireplumber libspa-0.2-bluetooth pulseaudio-utils \
+    pipewire pipewire-alsa pipewire-pulse wireplumber libspa-0.2-bluetooth pulseaudio-utils \
     shairport-sync sudo
 
 systemctl enable --now bluetooth.service
@@ -133,7 +133,9 @@ sudo -u "$AUDIO_USER" \
     DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$AUDIO_UID/bus" \
     systemctl --user enable --now pipewire.socket pipewire-pulse.socket wireplumber.service
 
-# Shairport Sync configuration and user service.
+# Shairport Sync configuration and user service. Shairport uses its ALSA
+# backend with the PipeWire ALSA PCM; this avoids the tested pa-backend
+# pause/resume failure where the stream remained corked after playback resumed.
 SHAIRPORT_DIR="/home/$AUDIO_USER/.config/shairport-sync"
 USER_SYSTEMD_DIR="/home/$AUDIO_USER/.config/systemd/user"
 mkdir -p "$SHAIRPORT_DIR" "$USER_SYSTEMD_DIR"
@@ -213,6 +215,7 @@ echo "Installation complete."
 echo "Bridge config: $CONFIG_DIR/chromacomfort.conf"
 echo "AirPlay name: $AIRPLAY_NAME"
 echo "Audio user: $AUDIO_USER (UID $AUDIO_UID)"
+echo "Shairport audio path: ALSA -> PipeWire -> BlueZ A2DP"
 echo "Built-in alerts: doorbell, complete, alert, notification"
 echo "MQTT play topic: $TOPIC_PREFIX/audio/play"
 echo
