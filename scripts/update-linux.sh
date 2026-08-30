@@ -60,15 +60,21 @@ echo "Bluetooth MAC: $BT_MAC"
 echo "Audio user: $AUDIO_USER (UID $AUDIO_UID)"
 echo "AirPlay name: $AIRPLAY_NAME"
 
-mkdir -p "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/sounds"
 cp "$REPO_DIR/chromacomfort_bridge.py" "$INSTALL_DIR/"
 cp "$REPO_DIR/chromacomfort_audio_status.py" "$INSTALL_DIR/"
 cp "$REPO_DIR/requirements-linux.txt" "$INSTALL_DIR/"
+cp "$REPO_DIR/scripts/generate-alert-sounds.py" "$INSTALL_DIR/"
 
 if [[ ! -x "$INSTALL_DIR/venv/bin/pip" ]]; then
     python3 -m venv "$INSTALL_DIR/venv"
 fi
 "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements-linux.txt"
+
+# Generate the project's built-in alert tones locally. These are synthesized
+# from code, so no third-party sound assets or downloads are required.
+python3 "$INSTALL_DIR/generate-alert-sounds.py" --output-dir "$INSTALL_DIR/sounds"
+chmod 644 "$INSTALL_DIR/sounds"/*.wav
 
 cp "$REPO_DIR/scripts/chromacomfort-status.sh" /usr/local/bin/chromacomfort-status
 chmod 755 /usr/local/bin/chromacomfort-status
@@ -115,10 +121,12 @@ systemctl enable \
 systemctl restart chromacomfort-audio-ready.service
 
 # Restart the control bridge so future bridge changes are picked up, then start
-# the audio MQTT diagnostics after the audio path is known-good.
+# the audio MQTT diagnostics/alert listener after the audio path is known-good.
 systemctl restart chromacomfort.service
 systemctl restart chromacomfort-audio-status.service
 
 echo
 echo "Update complete."
+echo "Built-in alerts: doorbell, complete, alert, notification"
+echo "MQTT play topic: <topic_prefix>/audio/play"
 echo "Run: sudo chromacomfort-status"
