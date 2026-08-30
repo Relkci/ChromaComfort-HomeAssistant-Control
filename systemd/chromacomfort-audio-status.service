@@ -1,0 +1,16 @@
+[Unit]
+Description=ChromaComfort AirPlay/A2DP MQTT Status Publisher
+Documentation=https://github.com/Relkci/ChromaComfort-Python-Control
+After=network-online.target chromacomfort.service chromacomfort-audio-ready.service
+Wants=network-online.target
+Requires=chromacomfort-audio-ready.service
+
+[Service]
+Type=simple
+ExecStart=/opt/chromacomfort/venv/bin/python /opt/chromacomfort/chromacomfort_audio_status.py --config /etc/chromacomfort/chromacomfort.conf --audio-user chromaudio
+Restart=always
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
