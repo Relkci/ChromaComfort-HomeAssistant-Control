@@ -105,6 +105,10 @@ mkdir -p /etc/systemd/system/chromacomfort.service.d
 cp "$REPO_DIR/systemd/chromacomfort.service.d/bluetooth-ready.conf" \
    /etc/systemd/system/chromacomfort.service.d/bluetooth-ready.conf
 
+# Install one-command diagnostic helper.
+cp "$REPO_DIR/scripts/chromacomfort-status.sh" /usr/local/bin/chromacomfort-status
+chmod 755 /usr/local/bin/chromacomfort-status
+
 # Headless PipeWire/WirePlumber user configuration.
 WP_DIR="/home/$AUDIO_USER/.config/wireplumber/wireplumber.conf.d"
 mkdir -p "$WP_DIR"
@@ -198,6 +202,7 @@ echo "AirPlay name: $AIRPLAY_NAME"
 echo "Audio user: $AUDIO_USER (UID $AUDIO_UID)"
 echo
 echo "Useful checks:"
+echo "  chromacomfort-status"
 echo "  systemctl status chromacomfort --no-pager"
 echo "  systemctl status chromacomfort-bluetooth-ready --no-pager"
 echo "  systemctl status chromacomfort-audio-ready --no-pager"
