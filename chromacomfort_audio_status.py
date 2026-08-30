@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Publish ChromaComfort AirPlay/A2DP health to MQTT/Home Assistant."""
+"""Publish ChromaComfort AirPlay/A2DP health and play local MQTT alerts."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import subprocess
+import threading
 import time
 from dataclasses import dataclass
 
@@ -17,7 +18,7 @@ import paho.mqtt.client as mqtt
 LOG = logging.getLogger("chromacomfort-audio-status")
 
 
-def run_command(args: list[str], *, user: str | None = None, uid: int | None = None) -> tuple[int, str]:
+def run_command(args: list[str], *, user: str | None = None, uid: int | None = None, timeout: int = 8) -> tuple[int, str]:
     command = args
     if user is not None and uid is not None:
         runtime = f"/run/user/{uid}"
@@ -29,7 +30,7 @@ def run_command(args: list[str], *, user: str | None = None, uid: int | None = N
         ] + args
 
     try:
-        proc = subprocess.run(command, capture_output=True, text=True, timeout=8, check=False)
+        proc = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
         return proc.returncode, (proc.stdout + proc.stderr).strip()
     except Exception as exc:
         return 1, str(exc)
@@ -68,12 +69,15 @@ class Settings:
 
 
 class AudioStatusPublisher:
-    def __init__(self, settings: Settings, audio_user: str, interval: int):
+    def __init__(self, settings: Settings, audio_user: str, interval: int, sounds_dir: str):
         self.s = settings
         self.audio_user = audio_user
         self.audio_uid = int(subprocess.check_output(["id", "-u", audio_user], text=True).strip())
         self.interval = interval
+        self.sounds_dir = os.path.abspath(sounds_dir)
         self.expected_sink = f"bluez_output.{self.s.bluetooth_address.replace(':', '_')}.1"
+        self.alert_lock = threading.Lock()
+        self.last_alert = "None"
 
         try:
             self.mqtt = mqtt.Client(
@@ -87,6 +91,7 @@ class AudioStatusPublisher:
             self.mqtt.username_pw_set(self.s.mqtt_username, self.s.mqtt_password)
         self.mqtt.will_set(self.topic("audio/availability"), "offline", retain=True)
         self.mqtt.on_connect = self._on_connect
+        self.mqtt.on_message = self._on_message
 
     def topic(self, suffix: str) -> str:
         return f"{self.s.mqtt_topic}/{suffix}"
@@ -142,12 +147,53 @@ class AudioStatusPublisher:
             "state_topic": self.topic("audio/output"),
             "icon": "mdi:speaker",
         })
+        self.discovery("sensor", "last_alert", {
+            "name": "Last Alert",
+            "state_topic": self.topic("audio/last_alert"),
+            "icon": "mdi:bell-ring",
+        })
 
     def _on_connect(self, client, userdata, flags, reason_code, properties=None):
         LOG.info("MQTT connected")
+        client.subscribe(self.topic("audio/play"))
         self.publish("audio/availability", "online")
+        self.publish("audio/last_alert", self.last_alert)
         self.publish_discovery()
         self.publish_status()
+
+    def _on_message(self, client, userdata, msg):
+        if msg.topic != self.topic("audio/play"):
+            return
+        sound = msg.payload.decode("utf-8", errors="replace").strip().lower()
+        threading.Thread(target=self.play_alert, args=(sound,), daemon=True).start()
+
+    def play_alert(self, sound: str) -> None:
+        if not sound or any(ch not in "abcdefghijklmnopqrstuvwxyz0123456789_-" for ch in sound):
+            LOG.warning("Rejected invalid alert name: %r", sound)
+            return
+
+        path = os.path.abspath(os.path.join(self.sounds_dir, f"{sound}.wav"))
+        if not path.startswith(self.sounds_dir + os.sep) or not os.path.isfile(path):
+            LOG.warning("Unknown alert sound: %s", sound)
+            return
+
+        with self.alert_lock:
+            LOG.info("Playing alert: %s", sound)
+            self.publish("audio/last_alert", f"Playing: {sound}")
+            rc, output = run_command(
+                ["pw-play", "--target", self.expected_sink, path],
+                user=self.audio_user,
+                uid=self.audio_uid,
+                timeout=30,
+            )
+            if rc == 0:
+                self.last_alert = sound
+                self.publish("audio/last_alert", sound)
+                LOG.info("Alert complete: %s", sound)
+            else:
+                self.last_alert = f"Failed: {sound}"
+                self.publish("audio/last_alert", self.last_alert)
+                LOG.error("Alert playback failed for %s: %s", sound, output)
 
     def get_status(self) -> dict[str, str]:
         rc, sinks = run_command(["pactl", "list", "short", "sinks"], user=self.audio_user, uid=self.audio_uid)
@@ -245,10 +291,11 @@ class AudioStatusPublisher:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Publish ChromaComfort AirPlay/A2DP status to MQTT")
+    parser = argparse.ArgumentParser(description="Publish ChromaComfort audio status and play MQTT alerts")
     parser.add_argument("--config", default="/etc/chromacomfort/chromacomfort.conf")
     parser.add_argument("--audio-user", default="chromaudio")
     parser.add_argument("--interval", type=int, default=10)
+    parser.add_argument("--sounds-dir", default="/opt/chromacomfort/sounds")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
@@ -258,7 +305,7 @@ def main() -> int:
     )
 
     settings = Settings.load(args.config)
-    AudioStatusPublisher(settings, args.audio_user, max(5, args.interval)).run()
+    AudioStatusPublisher(settings, args.audio_user, max(5, args.interval), args.sounds_dir).run()
     return 0
 
 
