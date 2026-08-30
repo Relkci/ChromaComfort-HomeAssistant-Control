@@ -31,3 +31,7 @@ discovery_prefix = homeassistant
 [device]
 name = Bathroom ChromaComfort
 id = chromacomfort_bathroom
+
+[audio]
+# Used by the MQTT audio-health publisher to identify the Shairport stream.
+airplay_name = Bathroom Speaker
