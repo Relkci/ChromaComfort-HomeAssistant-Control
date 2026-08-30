@@ -51,6 +51,14 @@ Other Linux hardware may work but is unvalidated unless specifically noted.
 
 MQTT Discovery is published automatically for fan, white-light, RGB, wall-RGB, bridge diagnostics, audio diagnostics, and local alert playback. No manual Home Assistant entity YAML is required when MQTT discovery is enabled.
 
+<img width="653" height="500" alt="image" src="https://github.com/user-attachments/assets/5b7adaa0-fc56-44bf-808a-6b5d5087c908" />
+
+<img width="216" height="500" alt="image" src="https://github.com/user-attachments/assets/2bad1852-29f3-40f9-911d-96cd5adbc164" />
+
+<img width="284" height="500" alt="image" src="https://github.com/user-attachments/assets/4e1fe942-fa9e-469d-9e52-0b541eb98a24" />
+
+### Sound Notifications
+
 Home Assistant can trigger built-in `doorbell`, `complete`, `alert`, and `notification` WAV sounds by publishing the name to `<topic_prefix>/audio/play`. Alerts use `pw-play` directly against the ChromaComfort PipeWire A2DP sink and can mix with active AirPlay audio.
 
 See [docs/ALERTS.md](docs/ALERTS.md) for examples.
