@@ -1,0 +1,16 @@
+[Unit]
+Description=Shairport Sync - __AIRPLAY_NAME__
+After=pipewire.service pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+Wants=pipewire.service pipewire-pulse.service pipewire-pulse.socket wireplumber.service
+
+[Service]
+Type=simple
+Environment="XDG_RUNTIME_DIR=/run/user/__AUDIO_UID__"
+Environment="PULSE_SERVER=unix:/run/user/__AUDIO_UID__/pulse/native"
+Environment="DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/__AUDIO_UID__/bus"
+ExecStart=/usr/bin/shairport-sync -c /home/__AUDIO_USER__/.config/shairport-sync/shairport-sync.conf -vv
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
