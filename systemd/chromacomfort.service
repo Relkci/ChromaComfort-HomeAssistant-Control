@@ -6,14 +6,14 @@ Wants=network-online.target bluetooth.target
 
 [Service]
 Type=simple
-User=chromacomfort
-Group=chromacomfort
 ExecStart=/opt/chromacomfort/venv/bin/python /opt/chromacomfort/chromacomfort_bridge.py --config /etc/chromacomfort/chromacomfort.conf
 Restart=always
 RestartSec=5
-
-# Keep Python log output immediate in journalctl.
 Environment=PYTHONUNBUFFERED=1
+
+# The service currently runs as root because BlueZ rfcomm device creation and
+# release require privileges on the tested Ubuntu host. This can be hardened
+# later once the final transport/capability requirements are settled.
 
 [Install]
 WantedBy=multi-user.target
