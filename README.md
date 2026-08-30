@@ -1,73 +1,120 @@
-# ChromaComfort Control & Status
+# ChromaComfort Home Assistant + AirPlay Bridge
 
-This project provides tools and scripts to control and monitor the ChromaComfort speaker (and fan/light/rgb)   via Bluetooth serial communication.
+This project provides Python tools and a tested Linux bridge for controlling and monitoring a Broan/NuTone ChromaComfort-Sensonic fan/light/speaker over Bluetooth Classic.
 
 https://broan-nutone.com/en-us/product/ventilationfans/spk110rgbl
 
 | ![Chroma Comfort](img/ChromaComfort.png) |
 |--------------------|
 
-This was developed based on the work of [taylorfinnell](https://gist.github.com/taylorfinnell/5349b8085d57836a45be7637055e0692), who provided a foundational understanding of the Bluetooth serial connection for the ChromaComfort speaker. The scripts allow users to send commands to the device and receive status updates.
+The Linux integration can provide both of these functions from one Bluetooth host:
 
-This project was research done to facilitate control of the device in HomeAssistant without using a dedicated ESP32 device, but rather a python script running on a computer that can connect to the device via Bluetooth. The goal is to allow for more flexible control and monitoring of the ChromaComfort speaker in a home automation setup.
+- Home Assistant control/status over MQTT using Bluetooth RFCOMM/SPP
+- AirPlay audio to the ChromaComfort Bluetooth speaker using Shairport Sync, PipeWire/WirePlumber, and BlueZ A2DP
 
-## Acknowledgements
+This avoids requiring a dedicated ESP32 for control and also solves the practical problem that the ChromaComfort normally expects a single paired Bluetooth host. The Linux bridge owns the Bluetooth relationship and exposes higher-level network interfaces to the rest of the home.
 
-This project was made possible thanks to prior work by [taylorfinnell](https://gist.github.com/taylorfinnell/5349b8085d57836a45be7637055e0692), whose gist provided valuable insight into the Bluetooth serial connection for the ChromaComfort speaker. Additional functionality was developed through trial and error based on that foundation.
+## Architecture
 
-## Longterm goal:
-
-Create a companiion that will allow control of the fan, lights, and speaker and bridge the bluetooth speaker to an AirPlay or other streaming protocol, so that the ChromaComfort speaker can be used as a smart speaker in a home automation setup.  The speaker/fan/light combo supports a single paried device, so any attempt to fully control the device with realtime status updates results in the inability to using bluetooth speaker functionality. By creating a companion that can bridge the bluetooth speaker to a streaming protocol, the device can be used as a smart speaker in a home automation setup.
-
-## General Steps to Use
-
-1. **Connect to the ChromaComfort Speaker via Bluetooth:**  
-   Pair your computer with the ChromaComfort speaker using your operating system's Bluetooth settings.
-
-2. **Identify the Bluetooth Serial Port:**  
-   Determine which serial port (COM port on Windows, /dev/tty.* on macOS/Linux) is assigned for controlling the device.
-
-3. **Run the Python Script:**  
-   Use the provided Python script to interact with the device over the identified Bluetooth serial port.
-
-
-
-## Requirements
-
-- Python 3.x
-- `pyserial` library (`pip install pyserial`)
-
-## Usage
-
-Identify the serial port after pairing with the ChromaComfort speaker. Then, run the script with the appropriate command-line arguments to control or monitor the device.
-
+```text
+                         ChromaComfort-Sensonic
+                         /                    \
+                RFCOMM / SPP                A2DP
+                      /                        \
+      chromacomfort_bridge.py               BlueZ
+                 |                             |
+                MQTT                    PipeWire/WirePlumber
+                 |                             |
+          Home Assistant                Shairport Sync
+                                               |
+                                            AirPlay
+                                               |
+                                         Spotify/iPhone
 ```
-python .\chromacomfort_control_status.py COM4 status
 
+## Home Assistant features
+
+MQTT Discovery is published automatically. The tested bridge exposes:
+
+- Fan on/off
+- White light on/off and brightness
+- RGB light on/off, color, and brightness
+- Wall RGB mode
+- Bridge diagnostics including connection state, packet counters, ACK count, last command/error, uptime, and raw brightness
+
+No manual Home Assistant entity YAML is required when MQTT discovery is enabled.
+
+## AirPlay features
+
+The optional Linux audio setup exposes the ChromaComfort speaker as an AirPlay destination, for example `Bathroom Speaker`.
+
+The tested Shairport configuration retains Spotify/AirPlay volume control while limiting the software attenuation range so normal listening levels remain audible. The Linux boot services also recover two behaviors observed with the tested device:
+
+- BlueZ can occasionally be unresponsive immediately after boot.
+- The device can report Bluetooth `Connected: yes` because RFCOMM is active while the A2DP PipeWire sink is still missing.
+
+The supplied health/readiness services verify the actual required state and retry/recover automatically.
+
+## Quick Linux installation
+
+See [LINUX.md](LINUX.md) for prerequisites, pairing, manual testing, troubleshooting, and architecture details.
+
+On a Debian/Ubuntu host:
+
+```bash
+git clone https://github.com/Relkci/ChromaComfort-Python-Control.git
+cd ChromaComfort-Python-Control
+sudo bash scripts/install-linux.sh
+```
+
+The installer prompts for:
+
+- ChromaComfort Bluetooth MAC address
+- RFCOMM channel (tested default: 7)
+- MQTT broker and credentials
+- Home Assistant device/topic names
+- AirPlay speaker name
+
+Pair and trust the ChromaComfort with BlueZ as documented in `LINUX.md`. The tested unit may request legacy PIN `1234`.
+
+## Windows / direct serial utility
+
+`chromacomfort_control_status.py` can still be used directly with a paired serial port, for example:
+
+```powershell
+python .\chromacomfort_control_status.py COM4 status
 python .\chromacomfort_control_status.py COM4 fan-on
 python .\chromacomfort_control_status.py COM4 fan-off
 python .\chromacomfort_control_status.py COM4 light-on
 python .\chromacomfort_control_status.py COM4 light-off
 python .\chromacomfort_control_status.py COM4 rgb-on
 python .\chromacomfort_control_status.py COM4 rgb-off
-
 ```
-After a successful command it keeps listening for another 3 seconds, so you should see the ACK and then the updated status, for example:
+
+After a successful command the script continues listening briefly for an ACK and updated status.
+
+## Linux components
+
+The repository includes:
+
+```text
+chromacomfort_bridge.py                 MQTT/RFCOMM bridge
+config/chromacomfort.conf.example       bridge configuration example
+systemd/chromacomfort.service           control bridge service
+scripts/install-linux.sh                guided Linux installer
+scripts/chromacomfort-bluetooth-ready.sh
+scripts/chromacomfort-audio-ready.sh.example
+wireplumber/                            headless Bluetooth/audio rules
+shairport/                              AirPlay configuration/service template
+LINUX.md                                full Linux documentation
 ```
-ACK received: 05 A0 40 93
 
-RX post: 3A 11 05 A0 41 40 00 0A ...
-    STATUS fan=off, white=ON, rgb=off, brightness=10
+## Tested behavior
 
-Result:
-  ACK seen: True
-  Requested state seen: True
-```
-Seeing Reqwuest state seen: True isn't always reliable -- more reserach needs to be done to determine if the device is actually in the requested state.
+The current Linux implementation has been validated with simultaneous RFCOMM control and A2DP audio from the same Linux Bluetooth host. Fan/light/RGB controls work through Home Assistant while the speaker remains usable through AirPlay. The complete configuration has also been reboot-tested with automatic BlueZ, RFCOMM, A2DP, PipeWire, and Shairport recovery.
 
-Refer to the script for available commands and options.
+Bluetooth implementations and ChromaComfort hardware revisions may differ, so verify the Serial Port RFCOMM channel with `sdptool browse <MAC>` rather than assuming channel 7 universally.
 
-An example is shown below with the light turned on iniitally.  The light is then turned off using the script.
+## Acknowledgements
 
-| ![Lightoff](img/lightoff.png) |
-|-------------------------------|
+This project builds on the reverse-engineering work of [Taylor Finnell](https://gist.github.com/taylorfinnell/5349b8085d57836a45be7637055e0692), which provided the foundational ChromaComfort Bluetooth serial protocol behavior. Additional Linux, MQTT, Home Assistant, RGB/brightness, boot recovery, and AirPlay integration behavior was developed and validated experimentally.
