@@ -1,7 +1,13 @@
 general =
 {
     name = "__AIRPLAY_NAME__";
-    output_backend = "pa";
+
+    # Use Shairport's ALSA backend through PipeWire's ALSA plugin rather than
+    # the PulseAudio compatibility backend. On the tested system, the pa
+    # backend remained corked after an AirPlay pause and would not resume
+    # until Shairport Sync was restarted. The ALSA -> PipeWire path resumes
+    # normally after pause/play transitions.
+    output_backend = "alsa";
 
     # Bluetooth A2DP latency and Shairport's normal synchronization logic did
     # not coexist reliably on the tested ChromaComfort speaker.
@@ -15,7 +21,10 @@ general =
     volume_control_profile = "flat";
 };
 
-pa =
+alsa =
 {
-    application_name = "__AIRPLAY_NAME__";
+    # pipewire-alsa exposes this PCM and routes it into the chromaudio user's
+    # PipeWire graph. WirePlumber then routes to the default ChromaComfort
+    # A2DP sink selected by the boot-readiness logic.
+    output_device = "pipewire";
 };
