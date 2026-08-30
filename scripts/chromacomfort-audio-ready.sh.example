@@ -1,0 +1,61 @@
+#!/bin/bash
+
+set -u
+
+MAC="__BLUETOOTH_MAC__"
+A2DP_SINK="bluez_output.__BLUETOOTH_MAC_UNDERSCORE__.1"
+AUDIO_USER="__AUDIO_USER__"
+AUDIO_UID="$(id -u "$AUDIO_USER")"
+RUNTIME="/run/user/$AUDIO_UID"
+
+log() {
+    logger -t chromacomfort-audio-ready "$*"
+    echo "$*"
+}
+
+sink_exists() {
+    sudo -u "$AUDIO_USER" \
+        XDG_RUNTIME_DIR="$RUNTIME" \
+        pactl list short sinks 2>/dev/null | grep -q "$A2DP_SINK"
+}
+
+log "Waiting for PipeWire/WirePlumber..."
+for attempt in $(seq 1 20); do
+    if sudo -u "$AUDIO_USER" \
+        XDG_RUNTIME_DIR="$RUNTIME" \
+        wpctl status >/dev/null 2>&1; then
+        break
+    fi
+    sleep 2
+done
+
+if sink_exists; then
+    log "ChromaComfort A2DP sink already available."
+    exit 0
+fi
+
+log "A2DP sink is not available. Re-establishing Bluetooth connection."
+
+# The device can report Connected=yes because RFCOMM is active while the A2DP
+# profile is still missing. Disconnect once, then reconnect with retries.
+timeout 10 bluetoothctl disconnect "$MAC" >/dev/null 2>&1 || true
+sleep 2
+
+for attempt in $(seq 1 10); do
+    log "Bluetooth A2DP connection attempt $attempt/10..."
+    timeout 15 bluetoothctl connect "$MAC" >/dev/null 2>&1 || true
+
+    for wait_attempt in $(seq 1 5); do
+        if sink_exists; then
+            log "ChromaComfort A2DP sink is available."
+            exit 0
+        fi
+        sleep 2
+    done
+
+    log "A2DP sink not present after attempt $attempt."
+    sleep 3
+done
+
+log "ERROR: Unable to establish ChromaComfort A2DP sink."
+exit 1
