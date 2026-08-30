@@ -41,8 +41,9 @@ AIRPLAY_NAME="$(awk -F'=' '
     }
 ' "$CONFIG")"
 
-if [[ -z "$AIRPLAY_NAME" && -r "/home/$AUDIO_USER/.config/shairport-sync/shairport-sync.conf" ]]; then
-    AIRPLAY_NAME="$(sed -n 's/^[[:space:]]*name[[:space:]]*=[[:space:]]*"\([^"]*\)";.*/\1/p' "/home/$AUDIO_USER/.config/shairport-sync/shairport-sync.conf" | head -n1)"
+SHAIRPORT_CONFIG="/home/$AUDIO_USER/.config/shairport-sync/shairport-sync.conf"
+if [[ -z "$AIRPLAY_NAME" && -r "$SHAIRPORT_CONFIG" ]]; then
+    AIRPLAY_NAME="$(sed -n 's/^[[:space:]]*name[[:space:]]*=[[:space:]]*"\([^"]*\)";.*/\1/p' "$SHAIRPORT_CONFIG" | head -n1)"
 fi
 AIRPLAY_NAME="${AIRPLAY_NAME:-Bathroom Speaker}"
 
@@ -59,6 +60,10 @@ echo "Updating ChromaComfort installation..."
 echo "Bluetooth MAC: $BT_MAC"
 echo "Audio user: $AUDIO_USER (UID $AUDIO_UID)"
 echo "AirPlay name: $AIRPLAY_NAME"
+
+echo "Ensuring PipeWire ALSA compatibility is installed..."
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y pipewire-alsa
 
 mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/sounds"
 cp "$REPO_DIR/chromacomfort_bridge.py" "$INSTALL_DIR/"
@@ -107,6 +112,19 @@ WP_DIR="/home/$AUDIO_USER/.config/wireplumber/wireplumber.conf.d"
 mkdir -p "$WP_DIR"
 cp "$REPO_DIR/wireplumber/90-headless-bluetooth.conf" "$WP_DIR/"
 cp "$REPO_DIR/wireplumber/91-chromacomfort-no-suspend.conf" "$WP_DIR/"
+
+# Refresh the managed Shairport configuration. Existing installations using
+# output_backend="pa" are migrated to ALSA -> PipeWire because the tested pa
+# backend can remain pulse.corked=true after AirPlay pause/resume. Preserve a
+# one-time backup of the pre-migration config for troubleshooting.
+mkdir -p "$(dirname "$SHAIRPORT_CONFIG")"
+if [[ -f "$SHAIRPORT_CONFIG" && ! -f "$SHAIRPORT_CONFIG.pre-alsa-migration" ]]; then
+    cp "$SHAIRPORT_CONFIG" "$SHAIRPORT_CONFIG.pre-alsa-migration"
+fi
+sed "s/__AIRPLAY_NAME__/${AIRPLAY_NAME//\//\\\/}/g" \
+    "$REPO_DIR/shairport/shairport-sync.conf.example" \
+    >"$SHAIRPORT_CONFIG"
+
 chown -R "$AUDIO_USER:$AUDIO_USER" "/home/$AUDIO_USER/.config"
 
 systemctl daemon-reload
@@ -117,7 +135,8 @@ systemctl enable \
     chromacomfort-audio-status.service
 
 # Re-run audio readiness first. This confirms the A2DP sink and then restarts
-# Shairport Sync, fixing the silent-AirPlay boot race seen in testing.
+# Shairport Sync, fixing the silent-AirPlay boot race and loading the managed
+# ALSA -> PipeWire Shairport configuration.
 systemctl restart chromacomfort-audio-ready.service
 
 # Restart the control bridge so future bridge changes are picked up, then start
@@ -127,6 +146,7 @@ systemctl restart chromacomfort-audio-status.service
 
 echo
 echo "Update complete."
+echo "Shairport audio path: ALSA -> PipeWire -> BlueZ A2DP"
 echo "Built-in alerts: doorbell, complete, alert, notification"
 echo "MQTT play topic: <topic_prefix>/audio/play"
 echo "Run: sudo chromacomfort-status"
