@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""ChromaComfort Linux Bluetooth RFCOMM to MQTT/Home Assistant bridge.
+"""ChromaComfort Linux RFCOMM/SPP to MQTT/Home Assistant bridge.
 
-This daemon is intended to run under systemd on a Linux host with BlueZ.
-Initial Bluetooth pairing/trust should be completed with bluetoothctl before
-starting the service. Once paired, this process opens RFCOMM directly and
-maintains the control/status connection.
-
-Protocol behavior is based on Taylor Finnell's ChromaComfort reverse
-engineering plus packet captures/experiments in this repository.
+Linux transport note:
+Direct Python AF_BLUETOOTH RFCOMM connections timed out against the tested
+ChromaComfort unit, while BlueZ's `rfcomm connect` plus pyserial was proven to
+work reliably. This daemon therefore manages `rfcomm connect` as a subprocess,
+opens the resulting /dev/rfcomm device with pyserial, and reconnects it when the
+session drops.
 """
 
 from __future__ import annotations
@@ -18,8 +17,7 @@ import json
 import logging
 import os
 import signal
-import socket
-import sys
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -27,7 +25,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import paho.mqtt.client as mqtt
-
+import serial
 
 START = 0x3A
 PAYLOAD_LEN = 17
@@ -62,46 +60,22 @@ def clamp(value: int, low: int, high: int) -> int:
 
 
 def gamma_correct(value: int) -> int:
-    """Apply a conventional LED gamma curve to an 8-bit channel."""
     value = clamp(value, 0, 255)
     return round(((value / 255.0) ** 2.8) * 255.0)
 
 
-def build_command(
-    command: int,
-    *,
-    r: int = 0,
-    g: int = 0,
-    b: int = 0,
-    dimmer: int = 0,
-    speed: int = 30,
-) -> bytes:
-    payload = bytes(
-        [
-            0x05,  # version
-            0x00,  # ctrl_cmd_1
-            0x40,  # ctrl_cmd_2
-            command,
-            clamp(r, 0, 255),
-            clamp(g, 0, 255),
-            clamp(b, 0, 255),
-            clamp(dimmer, 0, 100),
-            clamp(speed, 0, 255),
-            0x01,  # sweep_color_value_1
-            0x18,  # sweep_color_value_2
-            0x00,  # duration
-            0x00,  # timer_1
-            0x00,  # timer_2
-            0x00,  # timer_3
-            0x00,  # timer_4
-            0x00,  # data_end
-        ]
-    )
+def build_command(command: int, *, r=0, g=0, b=0, dimmer=0, speed=30) -> bytes:
+    payload = bytes([
+        0x05, 0x00, 0x40, command,
+        clamp(r, 0, 255), clamp(g, 0, 255), clamp(b, 0, 255),
+        clamp(dimmer, 0, 100), clamp(speed, 0, 255),
+        0x01, 0x18, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    ])
     return bytes([START, PAYLOAD_LEN]) + payload
 
 
 def extract_packets(buffer: bytearray) -> list[bytes]:
-    packets: list[bytes] = []
+    packets = []
     while True:
         try:
             start = buffer.index(START)
@@ -112,8 +86,7 @@ def extract_packets(buffer: bytearray) -> list[bytes]:
             del buffer[:start]
         if len(buffer) < 2:
             break
-        length = buffer[1]
-        total = 2 + length
+        total = 2 + buffer[1]
         if len(buffer) < total:
             break
         packets.append(bytes(buffer[:total]))
@@ -128,11 +101,7 @@ def decode_packet(packet: bytes) -> dict:
     payload = packet[2:]
     if length == 4 and len(payload) == 4 and payload[1:3] == bytes([0xA0, 0x40]):
         return {"type": "ack", "payload": payload}
-    if (
-        length == 17
-        and len(payload) == 17
-        and payload[0:3] == bytes([0x05, 0xA0, 0x41])
-    ):
+    if length == 17 and len(payload) == 17 and payload[0:3] == bytes([0x05, 0xA0, 0x41]):
         mask = payload[3]
         return {
             "type": "status",
@@ -155,6 +124,8 @@ def decode_packet(packet: bytes) -> dict:
 class Settings:
     bluetooth_address: str
     rfcomm_channel: int
+    rfcomm_number: int
+    rfcomm_device: str
     reconnect_seconds: float
     command_retry_seconds: float
     command_timeout_seconds: float
@@ -172,9 +143,12 @@ class Settings:
         cfg = configparser.ConfigParser()
         if not cfg.read(path):
             raise FileNotFoundError(f"Unable to read config: {path}")
+        number = cfg.getint("bluetooth", "rfcomm_number", fallback=0)
         return cls(
             bluetooth_address=cfg.get("bluetooth", "address"),
-            rfcomm_channel=cfg.getint("bluetooth", "rfcomm_channel", fallback=1),
+            rfcomm_channel=cfg.getint("bluetooth", "rfcomm_channel", fallback=7),
+            rfcomm_number=number,
+            rfcomm_device=cfg.get("bluetooth", "rfcomm_device", fallback=f"/dev/rfcomm{number}"),
             reconnect_seconds=cfg.getfloat("bluetooth", "reconnect_seconds", fallback=5.0),
             command_retry_seconds=cfg.getfloat("bluetooth", "command_retry_seconds", fallback=0.10),
             command_timeout_seconds=cfg.getfloat("bluetooth", "command_timeout_seconds", fallback=5.0),
@@ -193,7 +167,8 @@ class ChromaComfortBridge:
     def __init__(self, settings: Settings):
         self.s = settings
         self.stop_event = threading.Event()
-        self.bt_socket: Optional[socket.socket] = None
+        self.rfcomm_proc: Optional[subprocess.Popen] = None
+        self.serial: Optional[serial.Serial] = None
         self.bt_connected = False
         self.mqtt_connected = False
         self.rx_buffer = bytearray()
@@ -210,9 +185,8 @@ class ChromaComfortBridge:
         self.pending_ack = threading.Event()
 
         try:
-            callback_version = mqtt.CallbackAPIVersion.VERSION2
             self.mqtt = mqtt.Client(
-                callback_api_version=callback_version,
+                callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
                 client_id=f"{self.s.device_id}_bridge",
             )
         except AttributeError:
@@ -227,7 +201,7 @@ class ChromaComfortBridge:
     def topic(self, suffix: str) -> str:
         return f"{self.s.mqtt_topic}/{suffix}"
 
-    def publish(self, suffix: str, payload, *, retain: bool = True) -> None:
+    def publish(self, suffix: str, payload, *, retain=True) -> None:
         if isinstance(payload, (dict, list)):
             payload = json.dumps(payload, separators=(",", ":"))
         self.mqtt.publish(self.topic(suffix), payload, qos=0, retain=retain)
@@ -268,39 +242,29 @@ class ChromaComfortBridge:
         self.mqtt.publish(topic, json.dumps(config), retain=True)
 
     def publish_discovery(self) -> None:
-        # Functional entities
         self._discovery("fan", "fan", {
-            "name": "Fan",
-            "command_topic": self.topic("fan/set"),
-            "state_topic": self.topic("fan/state"),
-            "payload_on": "ON", "payload_off": "OFF",
+            "name": "Fan", "command_topic": self.topic("fan/set"),
+            "state_topic": self.topic("fan/state"), "payload_on": "ON", "payload_off": "OFF",
         })
         self._discovery("light", "white_light", {
-            "name": "White Light",
-            "command_topic": self.topic("white/set"),
-            "state_topic": self.topic("white/state"),
-            "payload_on": "ON", "payload_off": "OFF",
+            "name": "White Light", "command_topic": self.topic("white/set"),
+            "state_topic": self.topic("white/state"), "payload_on": "ON", "payload_off": "OFF",
         })
         self._discovery("light", "rgb_light", {
-            "name": "RGB Light",
-            "command_topic": self.topic("rgb/set"),
-            "state_topic": self.topic("rgb/state"),
+            "name": "RGB Light", "command_topic": self.topic("rgb/set"),
+            "state_topic": self.topic("rgb/state"), "payload_on": "ON", "payload_off": "OFF",
             "brightness": True,
             "brightness_command_topic": self.topic("rgb/brightness/set"),
             "brightness_state_topic": self.topic("rgb/brightness/state"),
             "brightness_scale": 255,
             "rgb_command_topic": self.topic("rgb/color/set"),
             "rgb_state_topic": self.topic("rgb/color/state"),
-            "payload_on": "ON", "payload_off": "OFF",
         })
         self._discovery("switch", "wall_rgb_mode", {
-            "name": "Wall RGB Mode",
-            "command_topic": self.topic("wall_rgb/set"),
-            "state_topic": self.topic("wall_rgb/state"),
-            "payload_on": "ON", "payload_off": "OFF",
+            "name": "Wall RGB Mode", "command_topic": self.topic("wall_rgb/set"),
+            "state_topic": self.topic("wall_rgb/state"), "payload_on": "ON", "payload_off": "OFF",
         })
 
-        # Diagnostic entities
         diagnostics = [
             ("sensor", "bridge_status", "Bridge Status", self.topic("bridge/status"), None),
             ("binary_sensor", "bluetooth_connected", "Bluetooth Connected", self.topic("bridge/bluetooth_connected"), "connectivity"),
@@ -313,15 +277,15 @@ class ChromaComfortBridge:
             ("sensor", "ack_count", "ACK Count", self.topic("bridge/ack_count"), None),
             ("sensor", "uptime", "Bridge Uptime", self.topic("bridge/uptime"), "duration"),
         ]
-        for component, object_id, name, state_topic, device_class in diagnostics:
+        for component, oid, name, state_topic, device_class in diagnostics:
             cfg = {"name": name, "state_topic": state_topic, "entity_category": "diagnostic"}
             if component == "binary_sensor":
                 cfg.update({"payload_on": "ON", "payload_off": "OFF"})
-            if object_id == "uptime":
+            if oid == "uptime":
                 cfg.update({"unit_of_measurement": "s", "device_class": "duration"})
             elif device_class:
                 cfg["device_class"] = device_class
-            self._discovery(component, object_id, cfg)
+            self._discovery(component, oid, cfg)
 
     def _on_mqtt_connect(self, client, userdata, flags, reason_code, properties=None):
         self.mqtt_connected = True
@@ -338,7 +302,7 @@ class ChromaComfortBridge:
 
     def _on_mqtt_message(self, client, userdata, msg):
         payload = msg.payload.decode("utf-8", errors="replace").strip()
-        suffix = msg.topic[len(self.s.mqtt_topic) + 1 :]
+        suffix = msg.topic[len(self.s.mqtt_topic) + 1:]
         LOG.info("MQTT command %s = %s", suffix, payload)
         try:
             if suffix == "fan/set":
@@ -364,20 +328,40 @@ class ChromaComfortBridge:
         self.mqtt.connect_async(self.s.mqtt_host, self.s.mqtt_port, keepalive=30)
         self.mqtt.loop_start()
 
+    def _release_rfcomm(self) -> None:
+        subprocess.run(
+            ["rfcomm", "release", str(self.s.rfcomm_number)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+
     def connect_bluetooth(self) -> None:
         self.disconnect_bluetooth()
+        self._release_rfcomm()
         self.publish_bridge_status(
             f"Connecting RFCOMM to {self.s.bluetooth_address} channel {self.s.rfcomm_channel}"
         )
-        bt = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
-        bt.settimeout(5.0)
-        try:
-            bt.connect((self.s.bluetooth_address, self.s.rfcomm_channel))
-        except Exception:
-            bt.close()
-            raise
-        bt.settimeout(0.5)
-        self.bt_socket = bt
+        self.rfcomm_proc = subprocess.Popen(
+            ["rfcomm", "connect", str(self.s.rfcomm_number), self.s.bluetooth_address, str(self.s.rfcomm_channel)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline and not self.stop_event.is_set():
+            if self.rfcomm_proc.poll() is not None:
+                raise ConnectionError(f"rfcomm exited with status {self.rfcomm_proc.returncode}")
+            if os.path.exists(self.s.rfcomm_device):
+                try:
+                    self.serial = serial.Serial(
+                        self.s.rfcomm_device, baudrate=115200,
+                        timeout=0.20, write_timeout=2,
+                    )
+                    break
+                except serial.SerialException:
+                    pass
+            time.sleep(0.10)
+        else:
+            raise TimeoutError(f"Timed out waiting for {self.s.rfcomm_device}")
+
         self.bt_connected = True
         self.rx_buffer.clear()
         self.publish("bridge/bluetooth_connected", "ON")
@@ -386,17 +370,26 @@ class ChromaComfortBridge:
     def disconnect_bluetooth(self) -> None:
         self.bt_connected = False
         self.publish("bridge/bluetooth_connected", "OFF")
-        if self.bt_socket:
+        if self.serial:
             try:
-                self.bt_socket.close()
-            except OSError:
+                self.serial.close()
+            except Exception:
                 pass
-        self.bt_socket = None
+        self.serial = None
+        if self.rfcomm_proc and self.rfcomm_proc.poll() is None:
+            self.rfcomm_proc.terminate()
+            try:
+                self.rfcomm_proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.rfcomm_proc.kill()
+        self.rfcomm_proc = None
+        self._release_rfcomm()
 
     def _send_packet(self, packet: bytes) -> None:
-        if not self.bt_socket or not self.bt_connected:
+        if not self.serial or not self.bt_connected:
             raise ConnectionError("Bluetooth RFCOMM is not connected")
-        self.bt_socket.sendall(packet)
+        self.serial.write(packet)
+        self.serial.flush()
         self.tx_packets += 1
         self.publish("bridge/tx_packets", str(self.tx_packets))
 
@@ -417,19 +410,18 @@ class ChromaComfortBridge:
 
     def send_named(self, name: str) -> bool:
         mapping = {
-            "fan-on": CMD_FAN_ON,
-            "fan-off": CMD_FAN_OFF,
-            "white-on": CMD_WHITE_ON,
-            "white-off": CMD_WHITE_OFF,
-            "wall-rgb-on": CMD_WALL_RGB_ON,
-            "wall-rgb-off": CMD_WALL_RGB_OFF,
+            "fan-on": CMD_FAN_ON, "fan-off": CMD_FAN_OFF,
+            "white-on": CMD_WHITE_ON, "white-off": CMD_WHITE_OFF,
+            "wall-rgb-on": CMD_WALL_RGB_ON, "wall-rgb-off": CMD_WALL_RGB_OFF,
         }
         return self.send_with_ack(build_command(mapping[name]), name)
 
     def set_rgb_power(self, enabled: bool) -> bool:
         cmd = CMD_ACTIVATE_FAVORITE1 if enabled else CMD_DEACTIVATE_FAVORITE1
-        packet = build_command(cmd, dimmer=self.last_rgb_brightness)
-        return self.send_with_ack(packet, "rgb-on" if enabled else "rgb-off")
+        return self.send_with_ack(
+            build_command(cmd, dimmer=self.last_rgb_brightness),
+            "rgb-on" if enabled else "rgb-off",
+        )
 
     def set_rgb_brightness(self, brightness_255: int) -> bool:
         brightness_255 = clamp(brightness_255, 0, 255)
@@ -452,7 +444,6 @@ class ChromaComfortBridge:
         if ok:
             self.last_rgb = (r, g, b)
             self.publish("rgb/color/state", f"{r},{g},{b}")
-            # Saving alone may not switch the favorite on; activate it explicitly.
             ok = self.set_rgb_power(True)
         return ok
 
@@ -473,17 +464,13 @@ class ChromaComfortBridge:
         self.publish("white/state", "ON" if info["white"] else "OFF")
         self.publish("wall_rgb/state", "ON" if info["wall_rgb"] else "OFF")
         self.publish("rgb/state", "ON" if info["favorite1"] else "OFF")
-        # Device reports brightness 0-100; HA expects 0-255 for this entity.
         brightness_255 = round(clamp(info["brightness"], 0, 100) * 255 / 100)
         self.publish("rgb/brightness/state", str(brightness_255))
-        self.publish("bridge/raw_status", json.dumps({
-            "mask": info["mask"],
-            "brightness": info["brightness"],
-            "unknown_9": info["unknown_9"],
-            "sweep": info["sweep"],
-            "favorite2": info["favorite2"],
-            "pattern": info["pattern"],
-        }))
+        self.publish("bridge/raw_status", {
+            "mask": info["mask"], "brightness": info["brightness"],
+            "unknown_9": info["unknown_9"], "sweep": info["sweep"],
+            "favorite2": info["favorite2"], "pattern": info["pattern"],
+        })
         self.publish_bridge_status("Connected / Ready")
 
     def bluetooth_loop(self) -> None:
@@ -500,16 +487,16 @@ class ChromaComfortBridge:
                     self.stop_event.wait(self.s.reconnect_seconds)
                     continue
             try:
-                assert self.bt_socket is not None
-                data = self.bt_socket.recv(1024)
-                if not data:
-                    raise ConnectionError("RFCOMM peer closed connection")
-                self.rx_buffer.extend(data)
-                for packet in extract_packets(self.rx_buffer):
-                    self.handle_packet(packet)
-            except socket.timeout:
-                continue
-            except Exception as exc:
+                if self.rfcomm_proc and self.rfcomm_proc.poll() is not None:
+                    raise ConnectionError(f"rfcomm exited with status {self.rfcomm_proc.returncode}")
+                assert self.serial is not None
+                data = self.serial.read(self.serial.in_waiting or 1)
+                if data:
+                    self.rx_buffer.extend(data)
+                    for packet in extract_packets(self.rx_buffer):
+                        self.handle_packet(packet)
+                time.sleep(0.005)
+            except (serial.SerialException, OSError, ConnectionError) as exc:
                 self.publish_error(f"Bluetooth connection lost: {exc}")
                 self.disconnect_bluetooth()
 
@@ -538,22 +525,15 @@ def main() -> int:
     parser.add_argument("--config", default="/etc/chromacomfort/chromacomfort.conf")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
-
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-
-    if not hasattr(socket, "AF_BLUETOOTH"):
-        LOG.error("This Python/platform does not provide AF_BLUETOOTH")
-        return 1
-
     try:
         settings = Settings.load(args.config)
     except Exception as exc:
         LOG.error("Configuration error: %s", exc)
         return 1
-
     bridge = ChromaComfortBridge(settings)
     signal.signal(signal.SIGTERM, bridge.stop)
     signal.signal(signal.SIGINT, bridge.stop)
