@@ -1,0 +1,13 @@
+[Unit]
+Description=Ensure Bluetooth is responsive for ChromaComfort
+After=dbus.service bluetooth.service
+Wants=bluetooth.service
+Before=chromacomfort.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/chromacomfort-bluetooth-ready.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
