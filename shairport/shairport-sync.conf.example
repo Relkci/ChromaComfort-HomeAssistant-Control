@@ -1,0 +1,21 @@
+general =
+{
+    name = "__AIRPLAY_NAME__";
+    output_backend = "pa";
+
+    # Bluetooth A2DP latency and Shairport's normal synchronization logic did
+    # not coexist reliably on the tested ChromaComfort speaker.
+    disable_synchronization = "yes";
+
+    # Keep AirPlay/Spotify source volume control, but avoid the very large
+    # default software attenuation range that made normal playback inaudible.
+    ignore_volume_control = "no";
+    volume_range_db = 30;
+    volume_max_db = 0.0;
+    volume_control_profile = "flat";
+};
+
+pa =
+{
+    application_name = "__AIRPLAY_NAME__";
+};
