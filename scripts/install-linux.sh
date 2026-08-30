@@ -71,12 +71,15 @@ AUDIO_UID="$(id -u "$AUDIO_USER")"
 loginctl enable-linger "$AUDIO_USER"
 systemctl start "user@${AUDIO_UID}.service"
 
-mkdir -p "$INSTALL_DIR" "$CONFIG_DIR"
+mkdir -p "$INSTALL_DIR" "$INSTALL_DIR/sounds" "$CONFIG_DIR"
 cp "$REPO_DIR/chromacomfort_bridge.py" "$INSTALL_DIR/"
 cp "$REPO_DIR/chromacomfort_audio_status.py" "$INSTALL_DIR/"
 cp "$REPO_DIR/requirements-linux.txt" "$INSTALL_DIR/"
+cp "$REPO_DIR/scripts/generate-alert-sounds.py" "$INSTALL_DIR/"
 python3 -m venv "$INSTALL_DIR/venv"
 "$INSTALL_DIR/venv/bin/pip" install -r "$INSTALL_DIR/requirements-linux.txt"
+python3 "$INSTALL_DIR/generate-alert-sounds.py" --output-dir "$INSTALL_DIR/sounds"
+chmod 644 "$INSTALL_DIR/sounds"/*.wav
 
 cat >"$CONFIG_DIR/chromacomfort.conf" <<EOF
 [bluetooth]
@@ -146,8 +149,6 @@ sed \
     >"$USER_SYSTEMD_DIR/shairport-sync.service"
 chown -R "$AUDIO_USER:$AUDIO_USER" "/home/$AUDIO_USER/.config"
 
-# Disable the distribution system-level Shairport service. The dedicated
-# chromaudio user service owns the PipeWire/PulseAudio session.
 systemctl disable --now shairport-sync.service 2>/dev/null || true
 sudo -u "$AUDIO_USER" \
     XDG_RUNTIME_DIR="/run/user/$AUDIO_UID" \
@@ -158,10 +159,7 @@ sudo -u "$AUDIO_USER" \
     DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$AUDIO_UID/bus" \
     systemctl --user enable shairport-sync.service
 
-# A2DP boot recovery. A device can be Connected=yes due to RFCOMM while the
-# actual A2DP sink is missing, so this checks for the PipeWire sink itself.
-# Shairport is deliberately restarted only after the A2DP sink is confirmed,
-# avoiding a boot race where Shairport starts against the built-in audio sink.
+# A2DP boot recovery. Shairport is restarted only after the sink is confirmed.
 sed \
     -e "s/__BLUETOOTH_MAC__/$BT_MAC/g" \
     -e "s/__BLUETOOTH_MAC_UNDERSCORE__/$BT_MAC_UNDERSCORE/g" \
@@ -174,8 +172,7 @@ sed "s/__AUDIO_UID__/$AUDIO_UID/g" \
     "$REPO_DIR/systemd/chromacomfort-audio-ready.service.example" \
     >/etc/systemd/system/chromacomfort-audio-ready.service
 
-# MQTT audio-health publisher. It reports A2DP, Shairport, stream state, and
-# current output into the same Home Assistant MQTT device.
+# MQTT audio-health and alert listener.
 cp "$REPO_DIR/systemd/chromacomfort-audio-status.service" \
    /etc/systemd/system/chromacomfort-audio-status.service
 
@@ -186,7 +183,6 @@ systemctl enable \
     chromacomfort-audio-ready.service \
     chromacomfort-audio-status.service
 
-# Restart WirePlumber so the new headless Bluetooth rules are loaded.
 sudo -u "$AUDIO_USER" \
     XDG_RUNTIME_DIR="/run/user/$AUDIO_UID" \
     DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$AUDIO_UID/bus" \
@@ -217,6 +213,8 @@ echo "Installation complete."
 echo "Bridge config: $CONFIG_DIR/chromacomfort.conf"
 echo "AirPlay name: $AIRPLAY_NAME"
 echo "Audio user: $AUDIO_USER (UID $AUDIO_UID)"
+echo "Built-in alerts: doorbell, complete, alert, notification"
+echo "MQTT play topic: $TOPIC_PREFIX/audio/play"
 echo
 echo "Useful checks:"
 echo "  chromacomfort-status"
