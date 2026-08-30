@@ -18,18 +18,15 @@ LOG = logging.getLogger("chromacomfort-audio-status")
 
 
 def run_command(args: list[str], *, user: str | None = None, uid: int | None = None) -> tuple[int, str]:
-    env = os.environ.copy()
     command = args
     if user is not None and uid is not None:
         runtime = f"/run/user/{uid}"
-        env.update({
-            "XDG_RUNTIME_DIR": runtime,
-            "PULSE_SERVER": f"unix:{runtime}/pulse/native",
-            "DBUS_SESSION_BUS_ADDRESS": f"unix:path={runtime}/bus",
-        })
-        command = ["sudo", "-u", user, "env"] + [f"{k}={v}" for k, v in env.items() if k in {
-            "XDG_RUNTIME_DIR", "PULSE_SERVER", "DBUS_SESSION_BUS_ADDRESS"
-        }] + args
+        command = [
+            "sudo", "-u", user, "env",
+            f"XDG_RUNTIME_DIR={runtime}",
+            f"PULSE_SERVER=unix:{runtime}/pulse/native",
+            f"DBUS_SESSION_BUS_ADDRESS=unix:path={runtime}/bus",
+        ] + args
 
     try:
         proc = subprocess.run(command, capture_output=True, text=True, timeout=8, check=False)
@@ -49,6 +46,7 @@ class Settings:
     discovery_prefix: str
     device_name: str
     device_id: str
+    airplay_name: str
 
     @classmethod
     def load(cls, path: str) -> "Settings":
@@ -65,6 +63,7 @@ class Settings:
             discovery_prefix=cfg.get("mqtt", "discovery_prefix", fallback="homeassistant").rstrip("/"),
             device_name=cfg.get("device", "name", fallback="ChromaComfort"),
             device_id=cfg.get("device", "id", fallback="chromacomfort_bathroom"),
+            airplay_name=cfg.get("audio", "airplay_name", fallback="Bathroom Speaker"),
         )
 
 
@@ -131,7 +130,7 @@ class AudioStatusPublisher:
             "state_topic": self.topic("audio/airplay_service"),
             "payload_on": "ON",
             "payload_off": "OFF",
-            "device_class": "running",
+            "device_class": "connectivity",
         })
         self.discovery("sensor", "airplay_stream", {
             "name": "AirPlay Stream",
@@ -165,11 +164,10 @@ class AudioStatusPublisher:
         routed = False
         paused = False
         output = "Unknown"
+        stream_seen = False
         if rc == 0:
-            lines = wpctl.splitlines()
             in_streams = False
-            stream_seen = False
-            for line in lines:
+            for line in wpctl.splitlines():
                 stripped = line.strip()
                 if "Streams:" in stripped:
                     in_streams = True
@@ -179,30 +177,32 @@ class AudioStatusPublisher:
                     break
                 if not in_streams:
                     continue
-                if "Bathroom Speaker" in line or "shairport" in line.lower():
+                if self.s.airplay_name.lower() in line.lower() or "shairport" in line.lower():
                     stream_seen = True
+                    continue
                 if stream_seen and ">" in line:
                     right = line.split(">", 1)[1].strip()
                     output = right.split(":playback", 1)[0].strip()
-                    if "ChromaComfort-Sensonic Speaker" in right:
-                        routed = True
-                    if "[paused]" in right.lower():
-                        paused = True
+                    routed = self.expected_sink in right or "ChromaComfort-Sensonic Speaker" in right
+                    paused = "[paused]" in right.lower()
+                    break
 
         if not shairport_active:
             stream_state = "Stopped"
+        elif not stream_seen:
+            stream_state = "Idle"
         elif routed and paused:
             stream_state = "Paused"
         elif routed:
             stream_state = "Playing"
         else:
-            stream_state = "Idle"
+            stream_state = "Wrong Output"
 
         if not shairport_active:
             overall = "Shairport Down"
         elif not sink_present:
             overall = "A2DP Missing"
-        elif routed and output != "Unknown" and "ChromaComfort-Sensonic Speaker" not in output:
+        elif stream_state == "Wrong Output":
             overall = "Wrong Output"
         else:
             overall = "Ready"
