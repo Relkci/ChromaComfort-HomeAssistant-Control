@@ -25,7 +25,7 @@ The Linux bridge owns the ChromaComfort Bluetooth relationship and exposes highe
 - **Operating system:** Ubuntu 26.04.1 LTS
 - **Audio stack:** PipeWire / pipewire-alsa / pipewire-pulse / WirePlumber
 - **Bluetooth stack:** BlueZ
-- **AirPlay:** Shairport Sync 4.3.7, ALSA backend through PipeWire
+- **AirPlay:** Shairport Sync 4.3.7, ALSA backend through PipeWire, 0.5-second backend buffer
 
 Other Linux hardware may work but is unvalidated unless specifically noted.
 
@@ -65,7 +65,13 @@ AirPlay -> Shairport Sync -> ALSA -> pipewire-alsa -> PipeWire -> BlueZ A2DP -> 
 
 The project originally used Shairport's PulseAudio (`pa`) backend through `pipewire-pulse`. Testing found a reproducible pause/resume failure: after pausing Spotify/AirPlay, the Shairport stream became `pulse.corked=true`; playback could report resumed while the stream remained corked and silent. Restarting Shairport temporarily recovered it.
 
-Switching Shairport to its ALSA backend with `output_device = "pipewire"` eliminated the tested pause/resume failure. The installer therefore installs `pipewire-alsa` and generates the ALSA-backed Shairport configuration by default. The updater migrates existing managed installations to the same configuration.
+Switching Shairport to its ALSA backend with `output_device = "pipewire"` eliminated the tested pause/resume failure. Initial ALSA playback was then audibly choppy/clipping-like with the smaller backend buffer. Setting:
+
+```conf
+audio_backend_buffer_desired_length_in_seconds = 0.5;
+```
+
+eliminated the observed dropouts on the reference host. The installer therefore installs `pipewire-alsa` and generates the ALSA-backed Shairport configuration with the 0.5-second backend buffer by default. The updater migrates existing managed installations to the same configuration.
 
 The boot services also recover behaviors observed with the tested device:
 
@@ -134,7 +140,7 @@ LINUX.md                                full Linux documentation
 
 ## Tested behavior
 
-The current implementation has been validated with simultaneous RFCOMM control and A2DP audio. Fan/light/RGB controls remain functional while AirPlay is in use. AirPlay initial playback, track changes, pause/resume, source-volume control, reboot recovery, and Home Assistant-triggered local WAV alerts have been exercised on the reference host. Alerts can mix into active AirPlay through PipeWire without stopping Shairport.
+The current implementation has been validated with simultaneous RFCOMM control and A2DP audio. Fan/light/RGB controls remain functional while AirPlay is in use. AirPlay initial playback, track changes, pause/resume, sustained clean playback with the 0.5-second backend buffer, source-volume control, reboot recovery, and Home Assistant-triggered local WAV alerts have been exercised on the reference host. Alerts can mix into active AirPlay through PipeWire without stopping Shairport.
 
 Bluetooth implementations and ChromaComfort hardware revisions may differ, so verify the Serial Port RFCOMM channel with `sdptool browse <MAC>` rather than assuming channel 7 universally.
 
