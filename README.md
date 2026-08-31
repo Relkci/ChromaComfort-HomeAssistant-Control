@@ -111,9 +111,9 @@ sudo bash scripts/update-linux.sh
 
 The updater installs `pipewire-alsa` if required and refreshes the managed Shairport configuration. On first migration it saves the previous configuration as `shairport-sync.conf.pre-alsa-migration`.
 
-## Windows / direct serial utility
+## Windows/Linux - Python / direct serial utility
 
-`chromacomfort_control_status.py` can still be used directly with a paired serial port:
+`chromacomfort_control_status.py` can still be used directly with a paired serial port after connecting to the chromacomfort speaker.  Bluetooth pair to the device and inspect hardware manager (Windows, for example) and look for the new COMport that is added.  After identifying the comport, you can control the device directly.  Same in linux after identifying the comport that is generated after the bluetooth connection is completed.:
 
 ```powershell
 python .\chromacomfort_control_status.py COM4 status
