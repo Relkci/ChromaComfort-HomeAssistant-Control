@@ -68,10 +68,12 @@ See [docs/ALERTS.md](docs/ALERTS.md) for examples.
 The tested Shairport Sync package does not contain the native PipeWire backend. The reference path is:
 
 ```text
-AirPlay -> Shairport Sync -> ALSA -> pipewire-alsa -> PipeWire -> BlueZ A2DP -> ChromaComfort
+AirPlay (Network/WiFi) -> Shairport Sync -> ALSA -> pipewire-alsa -> PipeWire -> BlueZ A2DP -> ChromaComfort (Bluetooth)
 ```
 
 The project originally used Shairport's PulseAudio (`pa`) backend through `pipewire-pulse`. Testing found a reproducible pause/resume failure: after pausing Spotify/AirPlay, the Shairport stream became `pulse.corked=true`; playback could report resumed while the stream remained corked and silent. Restarting Shairport temporarily recovered it.
+
+### Audio Buffer on ALSA Bridge
 
 Switching Shairport to its ALSA backend with `output_device = "pipewire"` eliminated the tested pause/resume failure. Initial ALSA playback was then audibly choppy/clipping-like with the smaller backend buffer. Setting:
 
@@ -81,13 +83,15 @@ audio_backend_buffer_desired_length_in_seconds = 0.5;
 
 eliminated the observed dropouts on the reference host. The installer therefore installs `pipewire-alsa` and generates the ALSA-backed Shairport configuration with the 0.5-second backend buffer by default. The updater migrates existing managed installations to the same configuration.
 
+### Multi-Room Synchronization Disabled
+
 However, due to the latency of the buffer and the stream to bluetooth, it becomes impractical, if not impossible to use the bridge as part of a real-time multi-room audio device.  The audio sent to the fan-speaker would always be so delayed that all multi-room audio would wait for it to catch-up, resulting in audio either not working at all, or intermitted at best.  Hence, shairport is configured to disable multi-room synchronization.  Never expect audio on the fan-speaker to be sync'd with other AirPlay audio.
 
 ``` conf
 disable_synchronization = "yes";;
 ```
 
-
+### Boot-Time/Order Audio Bridge Handling
 
 The boot services also recover behaviors observed with the tested device:
 
