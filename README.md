@@ -81,6 +81,14 @@ audio_backend_buffer_desired_length_in_seconds = 0.5;
 
 eliminated the observed dropouts on the reference host. The installer therefore installs `pipewire-alsa` and generates the ALSA-backed Shairport configuration with the 0.5-second backend buffer by default. The updater migrates existing managed installations to the same configuration.
 
+However, due to the latency of the buffer and the stream to bluetooth, it becomes impractical, if not impossible to use the bridge as part of a real-time multi-room audio device.  The audio sent to the fan-speaker would always be so delayed that all multi-room audio would wait for it to catch-up, resulting in audio either not working at all, or intermitted at best.  Hence, shairport is configured to disable multi-room synchronization.  Never expect audio on the fan-speaker to be sync'd with other AirPlay audio.
+
+``` conf
+disable_synchronization = "yes";;
+```
+
+
+
 The boot services also recover behaviors observed with the tested device:
 
 - BlueZ can occasionally be unresponsive immediately after boot.
