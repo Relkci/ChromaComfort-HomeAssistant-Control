@@ -88,7 +88,7 @@ eliminated the observed dropouts on the reference host. The installer therefore 
 However, due to the latency of the buffer and the stream to bluetooth, it becomes impractical, if not impossible to use the bridge as part of a real-time multi-room audio device.  The audio sent to the fan-speaker would always be so delayed that all multi-room audio would wait for it to catch-up, resulting in audio either not working at all, or intermitted at best.  Hence, shairport is configured to disable multi-room synchronization.  Never expect audio on the fan-speaker to be sync'd with other AirPlay audio.
 
 ``` conf
-disable_synchronization = "yes";;
+disable_synchronization = "yes";
 ```
 
 ### Boot-Time/Order Audio Bridge Handling
